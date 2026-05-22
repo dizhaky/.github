@@ -48,7 +48,7 @@ jobs:
           echo "manager=$pm" >> "$GITHUB_OUTPUT"
           echo "Using package manager: $pm"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: steps.pm.outputs.manager == 'pnpm'
 
       - uses: actions/setup-node@v6
