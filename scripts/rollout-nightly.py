@@ -32,31 +32,25 @@ def put_file(repo: str, dest: str, content: str, msg: str):
         sha = existing.get("sha")
     except RuntimeError:
         pass
-    payload = {
-        "message": msg,
-        "content": base64.b64encode(content.encode()).decode(),
-    }
+    args = [
+        "api", "-X", "PUT", f"repos/dizhaky/{repo}/contents/{path}",
+        "-f", f"message={msg}",
+        "-f", f"content={base64.b64encode(content.encode()).decode()}",
+    ]
     if sha:
-        payload["sha"] = sha
-    subprocess.run(
-        ["gh", "api", "-X", "PUT", f"repos/dizhaky/{repo}/contents/{path}",
-         "-f", f"message={msg}",
-         "-f", f"content={payload['content']}"],
-        + (["-f", f"sha={sha}"] if sha else []),
-        check=True,
-        capture_output=True,
-    )
+        args.extend(["-f", f"sha={sha}"])
+    subprocess.run(["gh", *args], check=True, capture_output=True)
 
 
 def main():
-    root = Path(__file__).resolve().parent
-    if not TEMPLATE_DIR.exists():
-        TEMPLATE_DIR = root / ".github" / "repo-templates"
+    template_dir = TEMPLATE_DIR
+    if not template_dir.exists():
+        template_dir = Path(__file__).resolve().parent.parent / ".github" / "repo-templates"
     updated = []
     for repo in repos():
         try:
             for wf in WORKFLOWS:
-                src = TEMPLATE_DIR / wf
+                src = template_dir / wf
                 if not src.exists():
                     continue
                 put_file(repo, wf, src.read_text(), f"chore: add {wf} from dizhaky/.github templates")
