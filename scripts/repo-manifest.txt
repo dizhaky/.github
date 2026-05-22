@@ -1,0 +1,25 @@
+# Active dizhaky repos for nightly-health-check fallback when GH_PAT is unavailable.
+# One repo name per line (without owner prefix).
+.github
+Organize-the-UST-onedrive-and-sharepoint
+cloud-automation-hub
+codex-config
+crm-pipeline
+crm-vault
+danizhaky.com
+dotfiles
+everything-claude-code
+falcon-ops
+kb-daemon
+kb-watcher
+litellm
+litellm-hetzner-config
+mcp-servers
+mission-control
+obsidian-vault
+openclaw-monorepo
+paperclip
+persistent-memory
+return-runner
+united-safety-technology
+ust-automation-scripts
