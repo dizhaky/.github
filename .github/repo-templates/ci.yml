@@ -1,0 +1,16 @@
+# Copy to repos/<name>/.github/workflows/ci.yml
+# Requires dizhaky/.github reusable workflows on the default branch.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  ci:
+    uses: dizhaky/.github/.github/workflows/reusable-ci.yml@main
+    with:
+      node-version: "22"
+      strict: false
+      package-manager: auto

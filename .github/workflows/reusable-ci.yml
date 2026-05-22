@@ -1,42 +1,185 @@
 name: Reusable CI
+
 on:
   workflow_call:
     inputs:
       node-version:
         type: string
-        default: "20"
+        default: "22"
       python-version:
         type: string
         default: "3.12"
+      strict:
+        type: boolean
+        default: false
+        description: "When true, lint/test failures fail the job."
+      package-manager:
+        type: string
+        default: "auto"
+        description: "auto | npm | pnpm | yarn | pip | none"
+
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node
-        if: hashFiles('package.json') != ''
-        uses: actions/setup-node@v4
+
+      - name: Resolve package manager
+        id: pm
+        shell: bash
+        run: |
+          pm="${{ inputs.package-manager }}"
+          if [ "$pm" = "auto" ]; then
+            if [ -f pnpm-lock.yaml ]; then
+              pm=pnpm
+            elif [ -f yarn.lock ]; then
+              pm=yarn
+            elif [ -f package.json ]; then
+              pm=npm
+            elif [ -f pyproject.toml ] || [ -f requirements.txt ]; then
+              pm=pip
+            else
+              pm=none
+            fi
+          fi
+          echo "manager=$pm" >> "$GITHUB_OUTPUT"
+          echo "Using package manager: $pm"
+
+      - uses: pnpm/action-setup@v4
+        if: steps.pm.outputs.manager == 'pnpm'
+
+      - uses: actions/setup-node@v4
+        if: contains(fromJSON('["npm","pnpm","yarn"]'), steps.pm.outputs.manager)
         with:
           node-version: ${{ inputs.node-version }}
-      - name: Setup Python
-        if: hashFiles('pyproject.toml') != '' || hashFiles('requirements.txt') != ''
-        uses: actions/setup-python@v5
+          cache: ${{ steps.pm.outputs.manager }}
+
+      - uses: actions/setup-python@v5
+        if: steps.pm.outputs.manager == 'pip'
         with:
           python-version: ${{ inputs.python-version }}
-      - name: Lint + Test + Build (auto-detect)
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.pm.outputs.manager != 'none'
+        shell: bash
         run: |
-          if [ -f package.json ]; then
-            npm ci || npm install
-            npm run lint --if-present
-            npm test --if-present -- --ci || true
-            npm run build --if-present
-          elif [ -f pyproject.toml ] || [ -f requirements.txt ]; then
-            python -m pip install --upgrade pip
-            [ -f requirements.txt ] && pip install -r requirements.txt
-            [ -f pyproject.toml ] && pip install .
-            pip install ruff pytest || true
-            ruff check . || true
-            pytest || true
-          else
-            echo "No recognized project type; nothing to do."
+          set -euo pipefail
+          case "${{ steps.pm.outputs.manager }}" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --immutable || yarn install ;;
+            npm) npm ci || npm install ;;
+            pip)
+              python -m pip install --upgrade pip
+              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+              if [ -f pyproject.toml ]; then pip install -e .; fi
+              pip install ruff pytest
+              ;;
+          esac
+
+      - name: Lint
+        if: steps.pm.outputs.manager != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STRICT="${{ inputs.strict }}"
+          on_fail() { if [ "$STRICT" = "true" ]; then exit 1; fi; }
+
+          has_script() {
+            local script="$1"
+            if [ "${{ steps.pm.outputs.manager }}" = "pip" ]; then
+              return 1
+            fi
+            node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['$script'] ? 0 : 1)" 2>/dev/null
+          }
+
+          run_js() {
+            local script="$1"
+            if ! has_script "$script"; then
+              echo "No npm script '$script'; skipping."
+              return 0
+            fi
+            case "${{ steps.pm.outputs.manager }}" in
+              pnpm) pnpm run "$script" || on_fail ;;
+              yarn) yarn "$script" || on_fail ;;
+              npm) npm run "$script" || on_fail ;;
+            esac
+          }
+
+          if [ "${{ steps.pm.outputs.manager }}" = "pip" ]; then
+            if [ -f pyproject.toml ] || [ -f requirements.txt ]; then
+              ruff check . || on_fail
+            fi
+            return 0
           fi
+
+          run_js lint
+
+      - name: Test
+        if: steps.pm.outputs.manager != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STRICT="${{ inputs.strict }}"
+          on_fail() { if [ "$STRICT" = "true" ]; then exit 1; fi; }
+
+          has_script() {
+            local script="$1"
+            if [ "${{ steps.pm.outputs.manager }}" = "pip" ]; then
+              return 1
+            fi
+            node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['$script'] ? 0 : 1)" 2>/dev/null
+          }
+
+          run_js() {
+            local script="$1"
+            shift
+            if ! has_script "$script"; then
+              echo "No npm script '$script'; skipping."
+              return 0
+            fi
+            case "${{ steps.pm.outputs.manager }}" in
+              pnpm) pnpm run "$script" -- "$@" || on_fail ;;
+              yarn) yarn "$script" "$@" || on_fail ;;
+              npm) npm run "$script" -- "$@" || on_fail ;;
+            esac
+          }
+
+          if [ "${{ steps.pm.outputs.manager }}" = "pip" ]; then
+            if [ -d tests ] || [ -d test ]; then
+              pytest -q || on_fail
+            fi
+            return 0
+          fi
+
+          run_js test -- --ci
+
+      - name: Build
+        if: steps.pm.outputs.manager != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STRICT="${{ inputs.strict }}"
+          on_fail() { if [ "$STRICT" = "true" ]; then exit 1; fi; }
+
+          has_script() {
+            node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.build ? 0 : 1)" 2>/dev/null
+          }
+
+          if [ "${{ steps.pm.outputs.manager }}" = "pip" ]; then
+            exit 0
+          fi
+
+          if ! has_script; then
+            echo "No build script; skipping."
+            exit 0
+          fi
+
+          case "${{ steps.pm.outputs.manager }}" in
+            pnpm) pnpm run build || on_fail ;;
+            yarn) yarn build || on_fail ;;
+            npm) npm run build || on_fail ;;
+          esac
