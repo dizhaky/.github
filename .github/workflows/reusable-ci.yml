@@ -113,7 +113,7 @@ jobs:
             if [ -f pyproject.toml ] || [ -f requirements.txt ]; then
               ruff check . || on_fail
             fi
-            return 0
+            exit 0
           fi
 
           run_js lint
@@ -152,7 +152,7 @@ jobs:
             if [ -d tests ] || [ -d test ]; then
               pytest -q || on_fail
             fi
-            return 0
+            exit 0
           fi
 
           run_js test -- --ci
