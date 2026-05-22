@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 
 SKIP = {
-    ".github",
     "agent-starter-pack",
     "openclaw-private-hank",
     "medifacture-capital",
