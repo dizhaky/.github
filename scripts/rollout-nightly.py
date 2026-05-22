@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 SKIP = {".github", "agent-starter-pack", "openclaw-private-hank", "medifacture-capital",
-        "cloud-admin-toolkit", "openclaw-observability", "brainsystem", "claude-lazy-loading", "openclaw"}
+        "cloud-admin-toolkit", "openclaw-observability", "brainsystem", "claude-lazy-loading", "openclaw",
+        "openclaw-infra"}  # archived (read-only)
 TEMPLATE_DIR = Path(__file__).resolve().parent / ".github" / "repo-templates"
 WORKFLOWS = ["nightly-maintenance.yml", "dependabot-auto-merge.yml"]
 
