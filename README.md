@@ -29,6 +29,8 @@ All dizhaky repos and automation should follow **[Karpathy's Four Rules](docs/KA
 
 **Secrets:** Add `GH_PAT` (classic, `repo` scope) to this repo for cross-repo account health checks. Per-repo workflows use `GITHUB_TOKEN`. See **[docs/RUNBOOKS.md](docs/RUNBOOKS.md)** for GH_PAT, GHAS/CodeQL, and optional Claude review setup.
 
+**Vault sync:** Operational supplements from Obsidian `Projects/Tech/github-ops/` live in **[docs/from-vault/](docs/from-vault/)** (cheatsheet, rollout, nightly automation).
+
 ## Repo bootstrap
 
 Copy files from `.github/repo-templates/` into each repository, or run the account rollout script from your automation host.

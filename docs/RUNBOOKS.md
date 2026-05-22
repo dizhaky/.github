@@ -2,6 +2,8 @@
 
 **Last updated:** 2026-05-22
 
+> **Also see:** [from-vault/](./from-vault/) — Obsidian-synced cheatsheet and account-ops supplement (rollout, branch protection, nightly automation).
+
 ## GH_PAT — account health check (`dizhaky/.github`)
 
 The nightly `nightly-health-check.yml` workflow scans all non-archived repos for Dependabot alerts and failed Actions runs. Private repos require a classic PAT with **`repo`** scope stored as **`GH_PAT`** in this repo.
