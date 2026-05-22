@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -18,6 +19,9 @@ def gh_json(*args: str):
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
+
     lines = subprocess.run(
         [
             "gh",
@@ -32,7 +36,7 @@ def main() -> int:
         check=True,
     ).stdout.strip().split("\n")
 
-    repos = [tuple(l.split("\t", 1)) for l in lines if l]
+    repos = [tuple(line.split("\t", 1)) for line in lines if line]
     count_gt_zero: list[str] = []
     rpr_present: list[str] = []
     ruleset_hits: list[str] = []
