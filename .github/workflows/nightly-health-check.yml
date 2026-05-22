@@ -68,15 +68,21 @@ jobs:
 
             echo "| ${repo} | ${crit} | ${high} | ${queued} | ${failed} |" >> "$GITHUB_STEP_SUMMARY"
 
-            gh run list -R "$full" --status queued --json databaseId,createdAt --limit 50 2>/dev/null | \
+            PROTECTED_WORKFLOWS="Docker Publish,Quality Gate,Nightly Maintenance" \
+            QUEUED_STALE_SECONDS="2700" \
+            gh run list -R "$full" --status queued --json databaseId,createdAt,workflowName --limit 50 2>/dev/null | \
               python3 -c "
-          import json,sys,subprocess
+          import json,sys,os,subprocess
           from datetime import datetime,timezone
+          protected=set(filter(None, os.environ.get('PROTECTED_WORKFLOWS','').split(',')))
+          stale_seconds=int(os.environ.get('QUEUED_STALE_SECONDS','2700'))
           runs=json.load(sys.stdin)
           now=datetime.now(timezone.utc)
           for r in runs:
+            if r.get('workflowName') in protected:
+              continue
             created=datetime.fromisoformat(r['createdAt'].replace('Z','+00:00'))
-            if (now-created).total_seconds()>1800:
+            if (now-created).total_seconds()>stale_seconds:
               subprocess.run(['gh','run','cancel',str(r['databaseId']),'-R','${full}'], capture_output=True)
           " 2>/dev/null || true
 
