@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Roll out nightly-maintenance.yml and dependabot-auto-merge.yml to dizhaky repos."""
+import argparse
 import base64
 import json
 import subprocess
@@ -9,7 +10,7 @@ from pathlib import Path
 SKIP = {".github", "agent-starter-pack", "openclaw-private-hank", "medifacture-capital",
         "cloud-admin-toolkit", "openclaw-observability", "brainsystem", "claude-lazy-loading", "openclaw",
         "openclaw-infra"}  # archived (read-only)
-TEMPLATE_DIR = Path(__file__).resolve().parent / ".github" / "repo-templates"
+TEMPLATE_DIR = Path(__file__).resolve().parent.parent / ".github" / "repo-templates"
 WORKFLOWS = ["nightly-maintenance.yml", "dependabot-auto-merge.yml"]
 
 
@@ -44,9 +45,15 @@ def put_file(repo: str, dest: str, content: str, msg: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List repos and workflows that would be updated without calling the GitHub API",
+    )
+    args = parser.parse_args()
+
     template_dir = TEMPLATE_DIR
-    if not template_dir.exists():
-        template_dir = Path(__file__).resolve().parent.parent / ".github" / "repo-templates"
     updated = []
     for repo in repos():
         try:
@@ -54,12 +61,20 @@ def main():
                 src = template_dir / wf
                 if not src.exists():
                     continue
+                if args.dry_run:
+                    print(f"DRY-RUN {repo}: would update .github/workflows/{wf}")
+                    continue
                 put_file(repo, wf, src.read_text(), f"chore: add {wf} from dizhaky/.github templates")
             updated.append(repo)
-            print(f"OK {repo}")
+            if not args.dry_run:
+                print(f"OK {repo}")
         except subprocess.CalledProcessError as e:
-            print(f"SKIP {repo}: {e.stderr.decode() if e.stderr else e}", file=sys.stderr)
-    print(f"\nRolled out to {len(updated)} repos")
+            err = e.stderr
+            if isinstance(err, bytes):
+                err = err.decode(errors="replace")
+            print(f"SKIP {repo}: {err or e}", file=sys.stderr)
+    label = "Would roll out to" if args.dry_run else "Rolled out to"
+    print(f"\n{label} {len(updated)} repos")
 
 
 if __name__ == "__main__":

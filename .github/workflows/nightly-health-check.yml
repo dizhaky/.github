@@ -22,6 +22,7 @@ jobs:
       - name: Scan all repos (requires GH_PAT for private repos)
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
           AUTO_FIX: ${{ github.event.inputs.auto-fix-repos }}
         run: |
           set -uo pipefail
@@ -29,7 +30,7 @@ jobs:
           echo "Run: $(date -u +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "${{ secrets.GH_PAT }}" = "" ]; then
+          if [ -z "${GH_PAT:-}" ]; then
             echo "::warning::GH_PAT secret not set — cross-repo scan may fail for private repos. Add a classic PAT with \`repo\` scope to dizhaky/.github secrets."
           fi
 

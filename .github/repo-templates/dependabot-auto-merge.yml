@@ -23,7 +23,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Auto-merge github-actions bumps
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' || steps.meta.outputs.dependency-type == 'direct:production'
+        if: steps.meta.outputs.package-ecosystem == 'github-actions' && (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: |
           pkg="${{ steps.meta.outputs.dependency-names }}"
           if echo "$pkg" | grep -qiE 'actions/|docker/|pnpm/action|hashicorp/|astral-sh/'; then
