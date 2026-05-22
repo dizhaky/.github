@@ -20,6 +20,10 @@ Closes [DAN-](https://linear.app/dizhaky/issue/DAN-)
 - [ ] CI green (including Quality Gate where applicable)
 - [ ] N/A — config/docs only
 
+## Documentation
+
+- [ ] Updated CLAUDE.md / AGENTS.md / system log (if applicable)
+
 ## Notes for reviewer
 
 <!-- Optional context -->
