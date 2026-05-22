@@ -16,6 +16,18 @@ All dizhaky repos and automation should follow **[Karpathy's Four Rules](docs/KA
 |----------|---------|
 | `reusable-ci.yml` | Node (npm/pnpm/yarn) + Python lint/test/build with optional `strict` mode |
 | `reusable-secret-scan.yml` | Gitleaks on every push and PR |
+| `reusable-nightly-maintenance.yml` | Full secret scan, alert report, optional auto-fix PR (ruff/audit) |
+| `nightly-health-check.yml` | **Scheduled** account-wide health scan (06:00 UTC); needs `GH_PAT` secret |
+
+## Nightly automation
+
+| Template | Destination | Purpose |
+|----------|-------------|---------|
+| `nightly-maintenance.yml` | `.github/workflows/` | Per-repo nightly maintenance (06:30 UTC) |
+| `dependabot-auto-merge.yml` | `.github/workflows/` | Auto-merge safe github-actions Dependabot PRs |
+| `codeql.yml` | `.github/workflows/` | Weekly CodeQL (requires GHAS on private repos) |
+
+**Secrets:** Add `GH_PAT` (classic, `repo` scope) to this repo for cross-repo account health checks. Per-repo workflows use `GITHUB_TOKEN`.
 
 ## Repo bootstrap
 

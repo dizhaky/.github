@@ -1,0 +1,29 @@
+# Copy to repos/<name>/.github/workflows/nightly-maintenance.yml
+# Opt-in nightly maintenance: secret scan, alert report, optional auto-fix PR.
+name: Nightly Maintenance
+
+on:
+  schedule:
+    - cron: "30 6 * * *"  # 06:30 UTC daily (staggered after account health check)
+  workflow_dispatch:
+    inputs:
+      auto-fix:
+        description: "Open PR with safe auto-fixes"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  maintenance:
+    permissions:
+      contents: write
+      pull-requests: write
+      security-events: read
+    uses: dizhaky/.github/.github/workflows/reusable-nightly-maintenance.yml@main
+    with:
+      auto-fix: ${{ github.event_name == 'workflow_dispatch' && inputs.auto-fix || false }}
+      full-secret-scan: true
+      python-fix: true
+      node-fix: true

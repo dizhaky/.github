@@ -1,0 +1,78 @@
+name: Nightly Account Health Check
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # 06:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      auto-fix-repos:
+        description: "Comma-separated repos to run auto-fix (empty = report only)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  account-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan all repos (requires GH_PAT)
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          AUTO_FIX: ${{ github.event.inputs.auto-fix-repos }}
+        run: |
+          set -euo pipefail
+          echo "# Nightly GitHub Account Health" >> "$GITHUB_STEP_SUMMARY"
+          echo "Run: $(date -u +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if ! gh auth status >/dev/null 2>&1; then
+            echo "::error::gh not authenticated"
+            exit 1
+          fi
+          if [ "${{ secrets.GH_PAT }}" = "" ]; then
+            echo "::warning::GH_PAT secret not set — cross-repo scan may fail for private repos. Add a classic PAT with \`repo\` scope to dizhaky/.github secrets."
+          fi
+
+          echo "| Repo | Critical | High | Queued Runs | Failed (24h) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|----------|------|-------------|--------------|" >> "$GITHUB_STEP_SUMMARY"
+
+          gh api user/repos --paginate -q '.[] | select(.archived==false) | .full_name' | while read -r full; do
+            owner="${full%%/*}"
+            repo="${full##*/}"
+            [ "$owner" = "dizhaky" ] || continue
+            [ "$repo" = ".github" ] && continue
+
+            crit=$(gh api "repos/${full}/dependabot/alerts?state=open&severity=critical&per_page=100" \
+              --paginate --jq '[.[]] | length' 2>/dev/null | awk '{s+=$1} END {print s+0}' || echo "?")
+            high=$(gh api "repos/${full}/dependabot/alerts?state=open&severity=high&per_page=100" \
+              --paginate --jq '[.[]] | length' 2>/dev/null | awk '{s+=$1} END {print s+0}' || echo "?")
+            queued=$(gh run list -R "$full" --status queued --json databaseId --jq 'length' 2>/dev/null || echo "?")
+            failed=$(gh run list -R "$full" --status failure --created "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)" --json databaseId --jq 'length' 2>/dev/null || echo "?")
+
+            echo "| ${repo} | ${crit} | ${high} | ${queued} | ${failed} |" >> "$GITHUB_STEP_SUMMARY"
+
+            # Cancel stale queued runs (>30 min)
+            gh run list -R "$full" --status queued --json databaseId,createdAt --limit 50 2>/dev/null | \
+              python3 -c "
+          import json,sys,subprocess
+          from datetime import datetime,timezone
+          runs=json.load(sys.stdin)
+          now=datetime.now(timezone.utc)
+          for r in runs:
+            created=datetime.fromisoformat(r['createdAt'].replace('Z','+00:00'))
+            if (now-created).total_seconds()>1800:
+              subprocess.run(['gh','run','cancel',str(r['databaseId']),'-R','${full}'], capture_output=True)
+          " 2>/dev/null || true
+
+            # Optional: trigger auto-fix workflow on target repos
+            if [ -n "$AUTO_FIX" ] && echo ",$AUTO_FIX," | grep -q ",${repo},"; then
+              gh workflow run nightly-maintenance.yml -R "$full" -f auto-fix=true 2>/dev/null \
+                && echo "Triggered auto-fix on ${repo}" >> "$GITHUB_STEP_SUMMARY" \
+                || echo "No nightly-maintenance workflow on ${repo}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "See [reusable workflows](https://github.com/dizhaky/.github/tree/main/.github/workflows) for per-repo maintenance." >> "$GITHUB_STEP_SUMMARY"

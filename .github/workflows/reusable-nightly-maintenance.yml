@@ -1,0 +1,125 @@
+name: Reusable Nightly Maintenance
+
+on:
+  workflow_call:
+    inputs:
+      auto-fix:
+        type: boolean
+        default: false
+        description: "Open a PR with safe auto-fixes (ruff, npm audit fix)"
+      python-fix:
+        type: boolean
+        default: true
+      node-fix:
+        type: boolean
+        default: true
+      full-secret-scan:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  secret-scan:
+    if: inputs.full-secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Full repository secret scan
+        run: gitleaks detect --redact --exit-code 1 --verbose
+
+  alert-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dependabot alert summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "## Dependabot alerts for ${REPO}" >> "$GITHUB_STEP_SUMMARY"
+          for sev in critical high medium low; do
+            count=$(gh api "repos/${REPO}/dependabot/alerts?state=open&severity=${sev}&per_page=1" \
+              --jq '. | length' 2>/dev/null || echo 0)
+            # paginate for accurate count
+            total=$(gh api "repos/${REPO}/dependabot/alerts?state=open&severity=${sev}&per_page=100" \
+              --paginate --jq '[.[]] | length' 2>/dev/null | awk '{s+=$1} END {print s+0}')
+            echo "- **${sev}**: ${total}" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  auto-fix:
+    if: inputs.auto-fix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect ecosystems
+        id: detect
+        shell: bash
+        run: |
+          has_python=false
+          has_node=false
+          [ -f pyproject.toml ] || [ -f requirements.txt ] && has_python=true
+          [ -f package.json ] && has_node=true
+          echo "python=$has_python" >> "$GITHUB_OUTPUT"
+          echo "node=$has_node" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: inputs.python-fix && steps.detect.outputs.python == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Python auto-fix (ruff)
+        if: inputs.python-fix && steps.detect.outputs.python == 'true'
+        run: |
+          pip install ruff
+          ruff check --fix . || true
+          ruff format . || true
+
+      - uses: actions/setup-node@v4
+        if: inputs.node-fix && steps.detect.outputs.node == 'true'
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        if: inputs.node-fix && steps.detect.outputs.node == 'true' && hashFiles('pnpm-lock.yaml') != ''
+
+      - name: Node auto-fix (audit)
+        if: inputs.node-fix && steps.detect.outputs.node == 'true'
+        shell: bash
+        run: |
+          set +e
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+            pnpm audit --fix 2>/dev/null || true
+          elif [ -f package-lock.json ]; then
+            npm ci 2>/dev/null || npm install
+            npm audit fix 2>/dev/null || true
+          fi
+
+      - name: Open auto-fix PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: bot/nightly-${{ github.run_id }}
+          delete-branch: true
+          commit-message: "chore: nightly auto-fix (ruff/audit)"
+          title: "chore: nightly auto-fix"
+          body: |
+            Automated nightly maintenance PR.
+            - Python: `ruff check --fix` / `ruff format` where applicable
+            - Node: `npm audit fix` / `pnpm audit --fix` where applicable
+            Review before merge.
