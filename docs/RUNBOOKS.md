@@ -59,22 +59,37 @@ Repos without GHAS should **not** add the workflow until billing is approved —
 
 ---
 
-## CLAUDE_CODE_OAUTH_TOKEN — optional PR review (`ust-automation-scripts`)
+## CLAUDE_CODE_OAUTH_TOKEN — PR review (`ust-automation-scripts`)
 
 The **Claude Code Review** workflow gates on secret presence: when `CLAUDE_CODE_OAUTH_TOKEN` is absent, the review job is skipped.
 
-### Enable (optional)
+### Status (2026-05-22)
+
+**Enabled** — secret present on `dizhaky/ust-automation-scripts`. Open a PR to verify `check-config` passes and `claude-review` executes.
+
+### Enable (if rotating token)
 
 1. Obtain a Claude Code OAuth token (see [claude-code-action docs](https://github.com/anthropics/claude-code-action)).
 2. Repo → https://github.com/dizhaky/ust-automation-scripts/settings/secrets/actions → **New repository secret**.
 3. Name: `CLAUDE_CODE_OAUTH_TOKEN` | paste token.
 4. Open a PR; **Claude Code Review** should run `check-config` (pass) and `claude-review` (execute).
 
-### Verify skip (secret absent)
+### Verify
 
 ```bash
-gh secret list -R dizhaky/ust-automation-scripts   # CLAUDE_CODE_OAUTH_TOKEN should be absent
-# Open a PR → workflow should succeed with claude-review skipped
+gh secret list -R dizhaky/ust-automation-scripts   # should list CLAUDE_CODE_OAUTH_TOKEN
 ```
 
 When enabled, configure `allowed_bots` in the workflow if Dependabot PRs should receive reviews.
+
+---
+
+## Stale queued run cancellation (`nightly-health-check`)
+
+Account health check cancels queued runs older than **45 minutes** (2700s). These workflows are **never** auto-cancelled:
+
+- `Docker Publish`
+- `Quality Gate`
+- `Nightly Maintenance`
+
+Tune via `PROTECTED_WORKFLOWS` and `QUEUED_STALE_SECONDS` in `.github/workflows/nightly-health-check.yml`.
