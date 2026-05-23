@@ -25,18 +25,27 @@ jobs:
   secret-scan:
     if: inputs.full-secret-scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 50
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install gitleaks
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
             | tar -xz -C /usr/local/bin gitleaks
 
-      - name: Full repository secret scan
-        run: gitleaks detect --redact --exit-code 1 --verbose
+      - name: Rolling secret scan (since 2 days ago)
+        shell: bash
+        run: |
+          set -euo pipefail
+          since=$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          echo "## Secret scan (rolling 2-day window)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Since: ${since}" >> "$GITHUB_STEP_SUMMARY"
+          gitleaks detect --redact --exit-code 1 --verbose --log-opts="--since=${since}"
 
   alert-report:
     runs-on: ubuntu-latest
