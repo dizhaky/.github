@@ -134,16 +134,24 @@ def main() -> int:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         docs_template = Path(mod.TEMPLATE_DIR)
+        has_dry_run = "--dry-run" in rollout_docs.read_text()
         log("F", "debug_scan.py:rollout-docs", "rollout-docs paths", {
             "compile_ok": compile_ok,
             "compile_err": compile_err,
             "template_dir": str(docs_template),
             "template_exists": docs_template.exists(),
+            "has_dry_run_flag": has_dry_run,
         })
         if not compile_ok:
             errors.append(f"rollout-docs.py: py_compile failed: {compile_err}")
         if not docs_template.exists():
             errors.append(f"rollout-docs.py: TEMPLATE_DIR missing ({docs_template})")
+        if not has_dry_run:
+            errors.append("rollout-docs.py: missing --dry-run safety flag")
+
+    rollout_nightly = root / "scripts" / "rollout-nightly.py"
+    if rollout_nightly.exists() and "--dry-run" not in rollout_nightly.read_text():
+        errors.append("rollout-nightly.py: missing --dry-run safety flag")
 
     # Hypothesis G: reusable-ci Build step must skip before node package.json probe on pip
     reusable_ci = root / ".github" / "workflows" / "reusable-ci.yml"
