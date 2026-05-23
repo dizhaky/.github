@@ -9,7 +9,7 @@ from pathlib import Path
 
 SKIP = {".github", "agent-starter-pack", "openclaw-private-hank", "medifacture-capital",
         "cloud-admin-toolkit", "openclaw-observability", "brainsystem", "claude-lazy-loading", "openclaw",
-        "openclaw-infra"}  # archived (read-only)
+        "openclaw-infra", "openclaw-monorepo", "paperclip"}  # archived/read-only; openclaw-monorepo + paperclip deprecated 2026-05-23
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / ".github" / "repo-templates"
 WORKFLOWS = ["nightly-maintenance.yml", "dependabot-auto-merge.yml"]
 

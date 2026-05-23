@@ -169,7 +169,7 @@ REPO_META: dict[str, dict[str, str]] = {
         "lint": "n/a",
     },
     "openclaw-monorepo": {
-        "purpose": "OpenClaw platform monorepo",
+        "purpose": "OpenClaw platform monorepo (DEPRECATED 2026-05-23 — archived; see docs/RUNBOOKS.md)",
         "stack": "TypeScript, pnpm",
         "install": "pnpm install",
         "run": "pnpm dev",
@@ -177,7 +177,7 @@ REPO_META: dict[str, dict[str, str]] = {
         "lint": "pnpm lint",
     },
     "paperclip": {
-        "purpose": "Paperclip application",
+        "purpose": "Paperclip application (DEPRECATED 2026-05-23 — archived; see docs/runbooks/paperclip-restart.md)",
         "stack": "see README.md",
         "install": "see README.md",
         "run": "see README.md",

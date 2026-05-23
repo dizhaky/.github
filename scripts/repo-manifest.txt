@@ -17,7 +17,9 @@ litellm-hetzner-config
 mcp-servers
 mission-control
 obsidian-vault
+# openclaw-monorepo — DEPRECATED 2026-05-23 (archived); restart: docs/RUNBOOKS.md#openclaw-monorepo-restart
 openclaw-monorepo
+# paperclip — DEPRECATED 2026-05-23 (archived); restart: docs/runbooks/paperclip-restart.md
 paperclip
 persistent-memory
 return-runner
