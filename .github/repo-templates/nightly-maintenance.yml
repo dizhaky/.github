@@ -1,5 +1,5 @@
 # Copy to repos/<name>/.github/workflows/nightly-maintenance.yml
-# Opt-in nightly maintenance: secret scan, alert report, optional auto-fix PR.
+# Opt-in nightly maintenance: rolling secret scan, alert report, optional auto-fix PR.
 name: Nightly Maintenance
 
 on:
