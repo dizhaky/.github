@@ -6,6 +6,7 @@ Never overwrites substantial existing agent files.
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import subprocess
@@ -296,7 +297,15 @@ def is_substantial(content: str | None) -> bool:
     return len(lines) >= MIN_SUBSTANTIAL_LINES
 
 
-def rollout_repo(repo: str) -> dict[str, list[str]]:
+def decode_stderr(err: bytes | str | None) -> str:
+    if err is None:
+        return ""
+    if isinstance(err, bytes):
+        return err.decode(errors="replace")
+    return err
+
+
+def rollout_repo(repo: str, *, dry_run: bool = False) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {"added": [], "skipped": [], "errors": []}
     sys_log_readme = (TEMPLATE_DIR / "docs-system-log-README.md").read_text()
 
@@ -311,10 +320,13 @@ def rollout_repo(repo: str) -> dict[str, list[str]]:
             result["skipped"].append(f"{path} (exists)")
             continue
         try:
+            if dry_run:
+                result["added"].append(f"{path} (dry-run)")
+                continue
             put_file(repo, path, content, msg)
             result["added"].append(path)
         except subprocess.CalledProcessError as e:
-            result["errors"].append(f"{path}: {e.stderr.decode() if e.stderr else e}")
+            result["errors"].append(f"{path}: {decode_stderr(e.stderr) or e}")
 
     for dest, template in [("CLAUDE.md", "CLAUDE.md.template"), ("AGENTS.md", "AGENTS.md.template")]:
         existing, sha = get_file(repo, dest)
@@ -326,15 +338,26 @@ def rollout_repo(repo: str) -> dict[str, list[str]]:
             continue
         try:
             body = render_template(template, repo)
+            if dry_run:
+                result["added"].append(f"{dest} (dry-run)")
+                continue
             put_file(repo, dest, body, f"chore: seed {dest} from dizhaky/.github template")
             result["added"].append(dest)
         except subprocess.CalledProcessError as e:
-            result["errors"].append(f"{dest}: {e.stderr.decode() if e.stderr else e}")
+            result["errors"].append(f"{dest}: {decode_stderr(e.stderr) or e}")
 
     return result
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report files that would be seeded without calling GitHub write APIs",
+    )
+    args = parser.parse_args()
+
     if not TEMPLATE_DIR.exists():
         print(f"Missing template dir: {TEMPLATE_DIR}", file=sys.stderr)
         sys.exit(1)
@@ -344,10 +367,11 @@ def main() -> None:
 
     for repo in all_repos:
         try:
-            result = rollout_repo(repo)
+            result = rollout_repo(repo, dry_run=args.dry_run)
             summary[repo] = result
             status = "OK" if not result["errors"] else "PARTIAL"
-            print(f"{status} {repo}: +{len(result['added'])} skip={len(result['skipped'])}")
+            prefix = "DRY-RUN" if args.dry_run else status
+            print(f"{prefix} {repo}: +{len(result['added'])} skip={len(result['skipped'])}")
             for item in result["skipped"]:
                 print(f"  skip {item}")
             for err in result["errors"]:
@@ -357,7 +381,8 @@ def main() -> None:
             print(f"FAIL {repo}: {e}", file=sys.stderr)
 
     added_repos = [r for r, s in summary.items() if s.get("added")]
-    print(f"\nRolled out doc files to {len(added_repos)} repos with changes")
+    label = "Would roll out doc files to" if args.dry_run else "Rolled out doc files to"
+    print(f"\n{label} {len(added_repos)} repos with changes")
 
 
 if __name__ == "__main__":
