@@ -23,6 +23,8 @@ SKIP = {
     "claude-lazy-loading",
     "openclaw",
     "openclaw-infra",
+    "openclaw-monorepo",  # deprecated/archived 2026-05-23
+    "paperclip",  # deprecated/archived 2026-05-23
 }
 
 ROOT = Path(__file__).resolve().parent.parent
