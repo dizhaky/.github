@@ -17,7 +17,7 @@ jobs:
   account-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Scan all repos (requires GH_PAT for private repos)
         env:
