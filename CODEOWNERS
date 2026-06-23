@@ -1,0 +1,3 @@
+# CODEOWNERS — managed by Terraform IaC
+# Profile and org-wide defaults — platform team owns this
+* @dizhaky
