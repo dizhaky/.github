@@ -17,7 +17,7 @@ GitHub Actions, Python rollout scripts
 
 ## Tooling
 
-- **Cursor rules:** `.cursor/rules/` (Karpathy four rules when installed)
+- **Cursor rules:** `.cursor/rules/karpathy-four-rules.mdc` — required always-on Karpathy four rules ([canonical](https://github.com/dizhaky/.github/blob/main/docs/KARPATHY-RULES.md)); install: `~/Dev/dotfiles/cursor/bin/install-karpathy-repo-rules.sh`
 - **Skills:** Repo-specific skills in `.cursor/skills/` or user-level `~/.cursor/skills-cursor/`
 - **MCP:** Configure per project; never log tokens or credentials
 
