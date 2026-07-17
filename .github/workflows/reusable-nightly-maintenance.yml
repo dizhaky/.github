@@ -107,7 +107,7 @@ jobs:
           ruff check --fix . || true
           ruff format . || true
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: inputs.node-fix && steps.detect.outputs.node == 'true'
         with:
           node-version: "22"
