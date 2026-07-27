@@ -57,7 +57,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: ${{ steps.pm.outputs.manager }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: steps.pm.outputs.manager == 'pip'
         with:
           python-version: ${{ inputs.python-version }}
