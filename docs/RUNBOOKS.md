@@ -191,7 +191,64 @@ Repos without GHAS should **not** add the workflow until billing is approved —
 
 ---
 
-## CLAUDE_CODE_OAUTH_TOKEN — PR review (`ust-automation-scripts`)
+## claude-review auth standard — use `anthropic_api_key` (not OAuth)
+
+**Standard (2026-08-05, DAN-2498):** every repo's `claude-review` workflow MUST
+authenticate with a **console API key** — the `anthropic_api_key` input (for the
+`anthropics/claude-code-action@v1` action) or the `ANTHROPIC_API_KEY` env var
+(for a custom `claude --print` invocation) — backed by the repo's
+`ANTHROPIC_API_KEY` secret (a `sk-ant-api03-…` console key).
+
+```yaml
+# action-based workflow
+- uses: anthropics/claude-code-action@v1
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+# OR custom claude --print workflow:
+#   env:
+#     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Do NOT use the Max-plan OAuth token** (`claude_code_oauth_token` input /
+`CLAUDE_CODE_OAUTH_TOKEN` env) for `claude-review`. The OAuth token is valid but
+the account's Max-plan OAuth API usage cap saturates under heavy Claude Code
+usage → a **sustained `429 rate_limit_error`** that fails every review. The
+`claude-code-action` hides the SDK body ("full output hidden for security"), so
+the failure (`is_error: true` / `$0` / 1 turn) reads like an auth failure — it is
+not. A console key carries its own rate limit, decoupled from interactive
+Max-plan usage, so CI reviews are reliable regardless of local session load.
+
+**Diagnose a failing claude-review by testing the token directly** (don't
+assume stale-token and rotate):
+
+```bash
+curl -s -o /tmp/r -w 'HTTP %{http_code}\n' -X POST https://api.anthropic.com/v1/messages \
+  -H "Authorization: Bearer <sk-ant-oat01-…>" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
+# 429 = valid token, account rate-capped → switch to anthropic_api_key
+# 401 = token actually invalid
+```
+
+**Audit (2026-08-05):** 10 dizhaky repos conform (`hermes-agent`, `mcp-servers`,
+`kb-daemon`, `persistent-memory`, `danizhaky.com`, `crm-pipeline`,
+`united-safety-technology`, `cloud-automation-hub`,
+`Organize-the-UST-onedrive-and-sharepoint`, `litellm-hetzner-config`).
+**Exception:** `dotfiles` uses the OAuth token env (Dan's decision, 2026-08-05 —
+accepted that it 429s under load and recovers otherwise). New repos must default
+to `anthropic_api_key`. Vestigial `CLAUDE_CODE_OAUTH_TOKEN` secrets on
+`anthropic_api_key` repos are left in place (harmless, not deleted).
+
+> The section below (`CLAUDE_CODE_OAUTH_TOKEN — PR review`) documents the
+> **deprecated** OAuth approach and is retained for history only — do not use
+> it for new setups.
+
+---
+
+## CLAUDE_CODE_OAUTH_TOKEN — PR review (`ust-automation-scripts`) — DEPRECATED
+
+> Superseded by the `anthropic_api_key` standard above (2026-08-05). The OAuth
+> token 429s under heavy Claude Code usage; use `anthropic_api_key` instead.
 
 The **Claude Code Review** workflow gates on secret presence: when `CLAUDE_CODE_OAUTH_TOKEN` is absent, the review job is skipped.
 
