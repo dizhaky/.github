@@ -22,14 +22,30 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # fetch-metadata emits `github_actions` (underscore), not `github-actions`.
+      # The hyphenated form never matched, so this step silently no-op'd while
+      # the job still reported success.
       - name: Auto-merge github-actions bumps
-        if: steps.meta.outputs.package-ecosystem == 'github-actions' && (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor')
+        if: steps.meta.outputs.package-ecosystem == 'github_actions' && (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor')
+        # `gh pr merge` resolves the target repo from the local git remote, and
+        # this job has no checkout — pass -R explicitly instead of cloning.
         run: |
           pkg="${{ steps.meta.outputs.dependency-names }}"
           if echo "$pkg" | grep -qiE 'actions/|docker/|pnpm/action|hashicorp/|astral-sh/'; then
-            gh pr merge --auto --squash "${{ github.event.pull_request.number }}"
+            gh pr merge --auto --squash -R "${{ github.repository }}" "${{ github.event.pull_request.number }}"
           else
             echo "Skipping auto-merge for: $pkg"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A skipped merge step is invisible in the checks UI (the job goes green
+      # either way). Log the reason so the next ecosystem-name mismatch is
+      # visible in the run without diffing workflow YAML.
+      - name: Report skipped auto-merge
+        if: steps.meta.outputs.package-ecosystem != 'github_actions' || (steps.meta.outputs.update-type != 'version-update:semver-patch' && steps.meta.outputs.update-type != 'version-update:semver-minor')
+        run: |
+          echo "Auto-merge not attempted for PR #${{ github.event.pull_request.number }}"
+          echo "  package-ecosystem: '${{ steps.meta.outputs.package-ecosystem }}' (auto-merge covers 'github_actions')"
+          echo "  update-type:       '${{ steps.meta.outputs.update-type }}' (auto-merge covers semver-patch/minor)"
+          echo "Leaving PR open for manual review."
