@@ -234,10 +234,13 @@ curl -s -o /tmp/r -w 'HTTP %{http_code}\n' -X POST https://api.anthropic.com/v1/
 `kb-daemon`, `persistent-memory`, `danizhaky.com`, `crm-pipeline`,
 `united-safety-technology`, `cloud-automation-hub`,
 `Organize-the-UST-onedrive-and-sharepoint`, `litellm-hetzner-config`).
-**Exception:** `dotfiles` uses the OAuth token env (Dan's decision, 2026-08-05 —
-accepted that it 429s under load and recovers otherwise). New repos must default
-to `anthropic_api_key`. Vestigial `CLAUDE_CODE_OAUTH_TOKEN` secrets on
-`anthropic_api_key` repos are left in place (harmless, not deleted).
+**dotfiles (resolved 2026-08-10):** was the OAuth exception (Dan's 2026-08-05
+decision, no working console key). Dan then minted a console key and dotfiles now
+CONFORMS — converted to `claude-code-action@v1` + `anthropic_api_key` +
+`id-token: write` + review-only `--max-turns 4` (PR dizhaky/dotfiles#628);
+claude-review green on a real PR. No repos remain on OAuth. Vestigial
+`CLAUDE_CODE_OAUTH_TOKEN` secrets on `anthropic_api_key` repos are left in place
+(harmless, not deleted).
 
 > The section below (`CLAUDE_CODE_OAUTH_TOKEN — PR review`) documents the
 > **deprecated** OAuth approach and is retained for history only — do not use
