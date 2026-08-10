@@ -241,6 +241,28 @@ CONFORMS — converted to `claude-code-action@v1` + `anthropic_api_key` +
 claude-review green on a real PR. No repos remain on OAuth. Vestigial
 `CLAUDE_CODE_OAUTH_TOKEN` secrets on `anthropic_api_key` repos are left in place
 (harmless, not deleted).
+### Posting reviews (required — else "green but no comment")
+
+**Auth alone is NOT enough.** The `claude-code-action@v1` does NOT auto-post
+the agent's final text — the agent must CREATE GitHub comments via tools, and
+the workflow must ALLOW them. Without this, claude-review runs green but posts
+zero comments (DAN-2545, dotfiles #633 / kb-daemon #514).
+
+```yaml
+claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
+```
+- grants the inline-comment MCP tool + `gh pr comment/diff/view` (review-only,
+  no file writes/git). Without `--allowedTools` granting these, the agent has
+  no way to post.
+
+The **prompt** must tell the agent to POST (not output text):
+- include `REPO: ${{ github.repository }}` + `PR NUMBER: ${{ github.event.pull_request.number }}`
+- "Use `gh pr comment <PR NUMBER> --body '...'` for a top-level summary (or LGTM)"
+- "Use `mcp__github_inline_comment__create_inline_comment` with `confirmed: true` to annotate a specific line"
+- "Post your review as GitHub comments ONLY — do NOT submit review text as a chat message"
+- constrain reading to `gh pr diff` (do NOT read CLAUDE.md/AGENTS.md — that burns turns -> `error_max_turns`)
+
+Canonical recipe: anthropics/claude-code-action `docs/solutions.md` -> "Automatic PR Code Review". Proven on dizhaky/dotfiles (PR #642; verified a review posted on PR #640 — ~$0.19/review, 5 turns).
 
 > The section below (`CLAUDE_CODE_OAUTH_TOKEN — PR review`) documents the
 > **deprecated** OAuth approach and is retained for history only — do not use
