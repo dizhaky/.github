@@ -34,6 +34,7 @@ Skip only for typo-only or comment-only edits.
 
 ## References
 
+- Unified Gateway Cookbook: [UNIFIED-GATEWAY-COOKBOOK.md](file:///Users/danizhaky/.claude/refs/UNIFIED-GATEWAY-COOKBOOK.md)
 - System log format: `docs/system-log/README.md`
 - Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=Documents&file=Projects/Tech/github-ops/RUNBOOKS)
 - Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=Documents&file=Projects/Tech/agent-documentation/STANDARDS)
