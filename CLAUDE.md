@@ -35,6 +35,6 @@ Skip only for typo-only or comment-only edits.
 ## References
 
 - System log format: `docs/system-log/README.md`
-- Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=Documents&file=Projects/Tech/github-ops/RUNBOOKS)
-- Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=Documents&file=Projects/Tech/agent-documentation/STANDARDS)
+- Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=obsidian-vault&file=Projects/Tech/GitHub%20Ops/01_Reference/RUNBOOKS)
+- Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=obsidian-vault&file=Projects/Tech/Agent%20Documentation/01_Reference/STANDARDS)
 - Central templates: [dizhaky/.github](https://github.com/dizhaky/.github)
