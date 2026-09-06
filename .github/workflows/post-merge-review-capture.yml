@@ -20,9 +20,10 @@
 # stated fallback ("daily 7am cron will catch up") is the same dormant
 # scheduler. Reviving Hermes would mean restoring that file from git history.
 #
-# Only pull_request_review.submitted is watched: Codex emits one review plus N
-# inline comments per pass, so keying on the review gives exactly one event and
-# needs no cross-event dedup.
+# Only pull_request_review.submitted is watched: supported review bots emit one
+# review plus N inline comments per pass, so keying on the review gives exactly
+# one event and needs no cross-event dedup. Human and unknown-bot reviews are
+# ignored so public contributors cannot create tracking issues.
 
 name: Post-Merge Review Capture
 
@@ -68,6 +69,14 @@ jobs:
           REVIEW_ID: ${{ github.event.review.id }}
         run: |
           set -euo pipefail
+
+          case "$REVIEWER" in
+            'chatgpt-codex-connector[bot]'|'copilot-pull-request-reviewer[bot]'|'github-actions[bot]') ;;
+            *)
+              echo "Review is by unsupported reviewer $REVIEWER - nothing to capture"
+              exit 0
+              ;;
+          esac
 
           # Authoritative merged state, title and merge time -- one API call
           # rather than the reduced webhook payload (see the job comment).

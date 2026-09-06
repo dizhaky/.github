@@ -124,6 +124,11 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(mutations, [])
 
+    def test_outsider_review_does_not_create_issue(self):
+        result, mutations = self.run_capture(reviewer="random-contributor")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+
     def test_premerge_review_does_not_create_issue(self):
         result, mutations = self.run_capture(submitted="2026-09-05T11:59:59Z")
         self.assertEqual(result.returncode, 0, result.stderr)
