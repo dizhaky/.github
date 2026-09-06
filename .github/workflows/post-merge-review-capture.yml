@@ -1,75 +1,90 @@
-# Post-Merge Review Capture — turns a review that lands after a merge into a
-# tracked GitHub issue.
-#
-# Why this exists: auto-merge.yml squashes a PR once the check runs that
-# *already exist* are green. Codex publishes no check run at all (it posts
-# reviews, comments, and reaction emoji), so it is invisible to that gate and
-# is routinely outrun — #328 merged 7s after Codex began reviewing, #330 12s
-# after being marked ready. Codex reviews are also submitted as COMMENTED,
-# which never sets reviewDecision to CHANGES_REQUESTED, so they would not have
-# blocked the merge even had they won the race.
-#
-# The merge is deliberately not slowed down (Dan, 2026-09-05). What this fixes
-# is the other half: a finding that arrives after the merge lands on a closed
-# PR that nobody re-reads, and is silently lost. #329's three P2 findings only
-# surfaced because a Claude session happened to hold a PR subscription.
-#
-# Replaces codex-review-webhook.yml, which POSTed these same events to the
-# Hermes receiver on mfc1. That fleet was stopped 2026-09-04 (DAN-3268) and the
-# endpoint returns HTTP 502, so every review event since has been dropped. Its
-# stated fallback ("daily 7am cron will catch up") is the same dormant
-# scheduler. Reviving Hermes would mean restoring that file from git history.
-#
-# Only pull_request_review.submitted is watched: supported review bots emit one
-# review plus N inline comments per pass, so keying on the review gives exactly
-# one event and needs no cross-event dedup. Human and unknown-bot reviews are
-# ignored so public contributors cannot create tracking issues.
-
+# Trusted receiver for fork-safe post-merge review capture. It never checks out
+# or executes PR code. The artifact contains only numeric IDs, which are
+# validated against GitHub's API before this workflow writes an issue.
 name: Post-Merge Review Capture
 
 on:
-  pull_request_review:
-    types: [submitted]
+  workflow_run:
+    workflows: ["Post-Merge Review Payload"]
+    types: [completed]
 
 permissions:
+  actions: read
   contents: read
   issues: write
   pull-requests: read
 
 jobs:
-  capture:
-    concurrency:
-      # A shared PR/reviewer group can retain only one pending run; a third
-      # review would cancel the middle event even with cancel-in-progress false.
-      group: post-merge-review-${{ github.event.review.id }}
-      cancel-in-progress: false
-    # No job-level condition: the `pull_request` object in a
-    # pull_request_review payload is a reduced form and does NOT reliably
-    # carry `merged`. v1 gated on `github.event.pull_request.merged == true`
-    # and skipped a genuine post-merge review on #333 (run 33995776029,
-    # conclusion "skipped", three minutes after that PR merged). The
-    # merged-state check now happens in the step, against the API, which is
-    # authoritative regardless of payload shape.
+  validate:
+    if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.identity.outputs.pr_number }}
+      review_id: ${{ steps.identity.outputs.review_id }}
     runs-on: ubuntu-latest
     steps:
-      - name: Open or update the tracking issue
-        # Review bodies and PR titles are attacker-controlled text and reach
-        # the shell only through env, never ${{ }} interpolation, which would
-        # splice them into the script. Same rule the workflow this replaces
-        # followed for its webhook payload.
+      - name: Download identifier payload
+        uses: actions/download-artifact@v4
+        with:
+          name: post-merge-review
+          path: review-payload
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate source identity
+        id: identity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REVIEWER: ${{ github.event.review.user.login }}
-          REVIEW_URL: ${{ github.event.review.html_url }}
-          REVIEW_STATE: ${{ github.event.review.state }}
-          REVIEW_BODY: ${{ github.event.review.body }}
-          REVIEW_SUBMITTED_AT: ${{ github.event.review.submitted_at }}
-          REVIEW_ID: ${{ github.event.review.id }}
+          PAYLOAD_FILE: review-payload/review.json
         run: |
           set -euo pipefail
 
+          PR_NUMBER=$(jq -er '.pr_number | select(type == "number")' "$PAYLOAD_FILE")
+          REVIEW_ID=$(jq -er '.review_id | select(type == "number")' "$PAYLOAD_FILE")
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$REVIEW_ID" =~ ^[0-9]+$ ]]
+
+          # workflow_run metadata comes from GitHub, never from the artifact.
+          # Empty PR associations must fail visibly rather than trusting the payload.
+          jq -e --argjson pr "$PR_NUMBER" '
+            .workflow_run.event == "pull_request_review" and
+            .workflow_run.path == ".github/workflows/post-merge-review-payload.yml" and
+            any(.workflow_run.pull_requests[]?; .number == $pr)
+          ' "$GITHUB_EVENT_PATH" > /dev/null
+          REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID")
+          ACTOR_ID=$(jq -er '.workflow_run.actor.id' "$GITHUB_EVENT_PATH")
+          jq -e --argjson review "$REVIEW_ID" --argjson actor "$ACTOR_ID" '
+            .id == $review and .user.id == $actor
+          ' <<<"$REVIEW_JSON" > /dev/null
+          printf 'pr_number=%s\nreview_id=%s\n' "$PR_NUMBER" "$REVIEW_ID" >> "$GITHUB_OUTPUT"
+
+  capture:
+    needs: validate
+    concurrency:
+      group: post-merge-review-${{ needs.validate.outputs.review_id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
+          REVIEW_ID: ${{ needs.validate.outputs.review_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$REVIEW_ID" =~ ^[0-9]+$ ]]
+
+          # Fetch every untrusted field from GitHub, not from the artifact.
+          REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID")
+          API_REVIEW_ID=$(jq -r '.id' <<<"$REVIEW_JSON")
+          [ "$API_REVIEW_ID" = "$REVIEW_ID" ]
+          REVIEWER=$(jq -r '.user.login' <<<"$REVIEW_JSON")
           case "$REVIEWER" in
             'chatgpt-codex-connector[bot]'|'copilot-pull-request-reviewer[bot]'|'github-actions[bot]') ;;
             *)
@@ -78,94 +93,81 @@ jobs:
               ;;
           esac
 
-          # Authoritative merged state, title and merge time -- one API call
-          # rather than the reduced webhook payload (see the job comment).
           PR_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
           MERGED=$(jq -r '.merged' <<<"$PR_JSON")
           if [ "$MERGED" != "true" ]; then
             echo "PR #$PR_NUMBER is not merged (merged=$MERGED) - nothing to capture"
             exit 0
           fi
-          # A review by the PR's own author is a reply to a reviewer, not a
-          # finding. v2 captured one on #340 and opened #347 for it -- an issue
-          # whose "review" was another session answering Codex on threads it had
-          # already resolved. Skip those.
+
           PR_AUTHOR=$(jq -r '.user.login' <<<"$PR_JSON")
           if [ "$REVIEWER" = "$PR_AUTHOR" ]; then
-            echo "Review is by the PR author ($PR_AUTHOR) - a reply, not a finding; nothing to capture"
+            echo "Review is by the PR author ($PR_AUTHOR) - nothing to capture"
             exit 0
           fi
 
-          PR_TITLE=$(jq -r '.title' <<<"$PR_JSON")
+          PR_TITLE=$(jq -r '.title | gsub("[|\\r\\n]"; " ")' <<<"$PR_JSON")
           PR_URL=$(jq -r '.html_url' <<<"$PR_JSON")
+          BASE_REF=$(jq -r '.base.ref' <<<"$PR_JSON")
           MERGED_AT=$(jq -r '.merged_at' <<<"$PR_JSON")
+          REVIEW_URL=$(jq -r '.html_url' <<<"$REVIEW_JSON")
+          REVIEW_STATE=$(jq -r '.state' <<<"$REVIEW_JSON")
+          REVIEW_SUBMITTED_AT=$(jq -r '.submitted_at // ""' <<<"$REVIEW_JSON")
+          REVIEW_BODY=$(jq -r '(.body // "")[:12000]' <<<"$REVIEW_JSON")
 
-          # Merged *now* does not mean merged when the review was submitted.
-          # A review on an open PR whose job sits queued until auto-merge
-          # lands would otherwise be filed as a post-merge finding, which is
-          # false: it had its chance to be seen on an open PR. Both stamps are
-          # ISO-8601 UTC from GitHub, so they order lexicographically.
           if [ -z "$REVIEW_SUBMITTED_AT" ] || [ -z "$MERGED_AT" ] \
              || [ "$MERGED_AT" = "null" ]; then
-            echo "Missing a timestamp (review=$REVIEW_SUBMITTED_AT merged=$MERGED_AT) - not capturing"
+            echo "Missing a timestamp - not capturing"
             exit 0
           fi
           if [[ "$REVIEW_SUBMITTED_AT" < "$MERGED_AT" ]]; then
-            echo "Review predates the merge ($REVIEW_SUBMITTED_AT < $MERGED_AT) - it was visible on the open PR, nothing to capture"
+            echo "Review predates the merge - nothing to capture"
             exit 0
           fi
 
-          # Equal stamps are genuinely ambiguous: GitHub reports seconds, so a
-          # review submitted in the same second as the merge could fall either
-          # side of it. Capture anyway and say so, rather than dropping it --
-          # a review that close cannot have gated the merge (auto-merge had
-          # already evaluated), so discarding it would lose a real finding to
-          # buy sub-second precision in a sentence. Only the claim is softened.
           if [ "$REVIEW_SUBMITTED_AT" = "$MERGED_AT" ]; then
-            LEAD="A review was submitted **in the same second as** this PR's merge. GitHub timestamps are second-precision, so which came first is not established -- but it cannot have gated the merge either way, and it lands on a closed PR."
+            LEAD="A review was submitted in the same second as this PR's merge. GitHub timestamps cannot establish which came first, but the review could not gate the completed merge."
           else
-            LEAD="A review was submitted **after** this PR was merged, so it never gated the merge and lands on a closed PR."
+            LEAD="A review was submitted after this PR was merged, so it never gated the merge and lands on a closed PR."
           fi
 
-          TITLE="Post-merge review ${REVIEW_ID} on #${PR_NUMBER} by ${REVIEWER}"
-
-          # Build the body in a file so no untrusted text is ever a shell word.
+          TITLE="Post-merge review $REVIEW_ID on #$PR_NUMBER by $REVIEWER"
+          MARKER="<!-- post-merge-review:$REVIEW_ID -->"
           BODY_FILE="$(mktemp)"
+          trap 'rm -f "$BODY_FILE"' EXIT
           {
+            printf '%s\n\n' "$MARKER"
             printf '%s\n\n' "$LEAD"
             printf '| | |\n|---|---|\n'
             printf '| PR | [#%s](%s) |\n' "$PR_NUMBER" "$PR_URL"
             printf '| Title | %s |\n' "$PR_TITLE"
-            # Backticks are literal Markdown, not shell substitutions.
-            # shellcheck disable=SC2016
-            printf '| Reviewer | `%s` |\n' "$REVIEWER"
-            # shellcheck disable=SC2016
-            printf '| Review state | `%s` |\n' "$REVIEW_STATE"
+            printf '| Base branch | %s |\n' "$BASE_REF"
+            printf '| Reviewer | %s |\n' "$REVIEWER"
+            printf '| Review state | %s |\n' "$REVIEW_STATE"
             printf '| Merged at | %s |\n' "$MERGED_AT"
             printf '| Review submitted | %s |\n' "$REVIEW_SUBMITTED_AT"
-            printf '\n**[Read the full review, including inline comments](%s)** — inline findings live on the review, not in the body below.\n' "$REVIEW_URL"
-            if [ -n "${REVIEW_BODY:-}" ]; then
-              printf '\n---\n\n### Review body\n\n'
-              printf '%s\n' "$REVIEW_BODY"
+            printf '\n**[Read the full review, including inline comments](%s)**\n' "$REVIEW_URL"
+            if [ -n "$REVIEW_BODY" ]; then
+              printf '\n---\n\n### Review body (bounded excerpt)\n\n%s\n' "$REVIEW_BODY"
             fi
-            printf '\nThe code is already on the default branch. Triage: fix it in a follow-up PR, or close this if it needs no action.\n'
-            # shellcheck disable=SC2016
-            printf '\n<sub>Opened automatically by `.github/workflows/post-merge-review-capture.yml`.</sub>\n'
+            printf '\nThe code is already on branch %s. Triage it in a follow-up PR or close this issue if no action is needed.\n' "$BASE_REF"
+            printf '\n<sub>Opened by post-merge-review-capture.yml.</sub>\n'
           } > "$BODY_FILE"
 
-          # Fail closed if lookup fails: an API outage must not create duplicates.
-          # One issue per review event. The review ID makes concurrent events
-          # independent while a replay of the same delivery remains idempotent.
-          EXISTING=$(gh issue list --repo "$REPO" --state open \
-            --limit 1000 --json number,title \
-            --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty" )
+          # REST pagination avoids both search-index lag and a fixed issue cap.
+          # Keep matching old titles for issues created before markers existed.
+          EXISTING=$(gh api --paginate --slurp \
+            "repos/$REPO/issues?state=all&per_page=100" | \
+            jq -r --arg title "$TITLE" --arg marker "$MARKER" '
+              [.[][] | select(.pull_request == null) |
+                select(.title == $title or
+                  ((.body // "") | startswith($marker + "\n")))][0].number // empty
+            ')
 
           if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --repo "$REPO" --body-file "$BODY_FILE"
-            echo "Commented on existing issue #$EXISTING"
-          else
-            gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
-            echo "Opened a new tracking issue"
+            echo "Review $REVIEW_ID is already captured in issue #$EXISTING"
+            exit 0
           fi
 
-          rm -f "$BODY_FILE"
+          gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+          echo "Opened a new tracking issue"

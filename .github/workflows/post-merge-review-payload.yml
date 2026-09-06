@@ -1,0 +1,31 @@
+#Unprivileged stage for fork-safe post-merge review capture.
+name: Post-Merge Review Payload
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build identifier payload
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$REVIEW_ID" =~ ^[0-9]+$ ]]
+          printf '{"pr_number":%s,"review_id":%s}\n' \
+            "$PR_NUMBER" "$REVIEW_ID" > review.json
+
+      - name: Upload identifier payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-merge-review
+          path: review.json
+          retention-days: 1

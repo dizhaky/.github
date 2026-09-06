@@ -254,16 +254,16 @@ permissions:
   issues: write
   pull-requests: write
 
-claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh api --method GET repos/$REPO/contents/AGENTS.md?ref=$BASE_SHA),Bash(gh api --method GET repos/$REPO/contents/CLAUDE.md?ref=$BASE_SHA),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
+claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh api --method GET \"repos/$REPO/contents/$RULE_PATH?ref=$BASE_SHA\" --jq .content | base64 --decode | head -c 12288 | head -n 200),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
 ```
-- grants the inline-comment MCP tool, two exact read-only `gh api --method GET`
-  instruction fetches, and `gh pr comment/diff/view` (no file writes/git).
+- grants the inline-comment MCP tool, one exact read-only bounded decode command
+  parameterized by `RULE_PATH`, and `gh pr comment/diff/view` (no file writes/git).
   Without `--allowedTools` granting these, the agent has
   no way to post.
 
 The **prompt** must tell the agent to POST (not output text):
 - include `REPO: ${{ github.repository }}`, `PR NUMBER: ${{ github.event.pull_request.number }}`, and `BASE_SHA: ${{ github.event.pull_request.base.sha }}`
-- before reading the diff, fetch `AGENTS.md` and `CLAUDE.md` from `BASE_SHA` with `gh api`; ignore missing files and cap each decoded file at 12 KiB / 200 lines so repository-specific review and security rules are honored without exhausting the turn budget
+- before reading the diff, set `RULE_PATH` to `AGENTS.md` and `CLAUDE.md` and run the granted bounded decode command for each; then derive every ancestor directory from `gh pr diff --name-only`, set `RULE_PATH` to each ancestor's `AGENTS.md`, and fetch each applicable file from `BASE_SHA`; ignore 404s and cap every decoded file at 12 KiB / 200 lines so root and subtree review/security rules are honored without exhausting the turn budget
 - "Use `gh pr comment <PR NUMBER> --body '...'` for a top-level summary (or LGTM)"
 - "Use `mcp__github_inline_comment__create_inline_comment` with `confirmed: true` to annotate a specific line"
 - "Post your review as GitHub comments ONLY — do NOT submit review text as a chat message"

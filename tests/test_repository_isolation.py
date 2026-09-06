@@ -18,6 +18,8 @@ def test_child_probe():
         pytest.skip("child-only isolation probe")
     assert _SENTINEL not in os.environ["HOME"]
     assert "TEST_SERVICE_API_KEY" not in os.environ
+    assert "TEST_SERVICE_AES_KEY" not in os.environ
+    assert "TEST_APP_ENCRYPT_KEY" not in os.environ
     assert os.environ["AWS_EC2_METADATA_DISABLED"] == "true"
 
 
@@ -28,6 +30,8 @@ def test_collection_isolation(tmp_path: Path):
         **os.environ,
         "HOME": str(live_home),
         "TEST_SERVICE_API_KEY": "secret-sentinel",
+        "TEST_SERVICE_AES_KEY": "secret-sentinel",
+        "TEST_APP_ENCRYPT_KEY": "secret-sentinel",
         _PROBE: "1",
     }
     result = subprocess.run(

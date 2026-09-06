@@ -24,15 +24,22 @@ class ReviewRunbookTest(unittest.TestCase):
         self.assertIn("12 KiB", section)
         self.assertNotIn("do NOT read CLAUDE.md/AGENTS.md", section)
         self.assertNotIn("Bash(gh api:*)", section)
-        self.assertIn("Bash(gh api --method GET repos/$REPO/contents/AGENTS.md?ref=$BASE_SHA)", section)
-        self.assertIn("Bash(gh api --method GET repos/$REPO/contents/CLAUDE.md?ref=$BASE_SHA)", section)
+        self.assertIn("contents/$RULE_PATH?ref=$BASE_SHA", section)
+        self.assertIn("base64 --decode | head -c 12288 | head -n 200", section)
+        self.assertIn("every ancestor directory", section)
 
     def test_primary_commands_and_ci_use_pytest_isolation(self):
         claude = (ROOT / "CLAUDE.md").read_text()
         workflow = (ROOT / ".github/workflows/template-tests.yml").read_text()
-        self.assertIn('| Test | `python3 -m pytest -q tests` |', claude)
+        self.assertIn('PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests', claude)
         self.assertIn("python -m pytest -q tests", workflow)
         self.assertTrue((ROOT / "tests/conftest.py").is_file())
+
+    def test_auto_merge_rechecks_after_template_tests_and_capture(self):
+        workflow = (ROOT / ".github/workflows/auto-merge.yml").read_text()
+        self.assertIn("- Template tests", workflow)
+        self.assertIn("- Post-Merge Review Capture", workflow)
+        self.assertNotIn("- Codex Review Webhook", workflow)
 
     def test_new_system_log_entries_have_canonical_metadata(self):
         log = (ROOT / "docs/system-log/2026-09-06.md").read_text()

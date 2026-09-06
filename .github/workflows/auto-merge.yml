@@ -16,7 +16,8 @@ on:
       - DeepSeek PR Review
       - deepseek-review
       - Auto-Label PRs
-      - Codex Review Webhook
+      - Post-Merge Review Capture
+      - Template tests
     types:
       - completed
   schedule:
