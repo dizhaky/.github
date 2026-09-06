@@ -87,7 +87,7 @@ if not os.environ.get("APP_TEST_ISOLATED"):
 **Problem:** Developers export API keys in their shell profiles (`.zshrc`, `.env`). Tests that test "fallback to provider when key is present" or unauthenticated failure paths will behave differently locally versus in CI. Ambient credentials can also allow mocked client bypasses to hit live APIs.
 
 **Rule:**
-- Blank out all credential-bearing environment variables before every test via an autouse fixture.
+- Blank out all credential-bearing environment variables at `conftest.py` module scope before project modules are collected, then repeat the scrub in an autouse fixture so individual tests cannot inherit credentials added later.
 - Match on standard credential suffixes (`_CREDENTIAL_SUFFIXES`) and explicit known credential names (`_CREDENTIAL_NAMES`).
 
 **Standard Credential Suffixes:**
@@ -125,7 +125,7 @@ if not os.environ.get("APP_TEST_ISOLATED"):
 - Isolate all known state root variables to temporary test directories:
   - Application-specific variables such as `APP_HOME`, `APP_STATE_DIR`, and `APP_DB_PATH`
   - `OBSIDIAN_VAULT*` / `CRM_*`: `CRM_VAULT_ROOT`, `CRM_STATE_DIR`, `OBSIDIAN_VAULT`
-  - `KB_*`: `KB_STATE_DIR`, `KB_API_TOKEN`
+  - `KB_*`: `KB_ROOT`, `KB_STATE_DIR`
   - `MEMORY_*`: `PERSISTENT_MEMORY_PATH`, `MEMORY_DB_PATH`
 - **Fail-Closed Write Guards (Deny-List):** Capture the real user home / state root *before* sandboxing rewires the environment. Install defensive wrappers around database connection functions (e.g. `sqlite3.connect` or domain-specific DB connect functions) that reject any target path resolving inside the operator's real directory tree.
 
