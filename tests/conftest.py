@@ -29,6 +29,8 @@ _CREDENTIAL_SUFFIXES = (
     "_PASSWORD",
     "_CREDENTIALS",
     "_ACCESS_KEY",
+    "_AES_KEY",
+    "_ENCRYPT_KEY",
     "_PRIVATE_KEY",
     "_OAUTH_TOKEN",
 )
