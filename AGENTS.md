@@ -12,7 +12,7 @@ GitHub Actions, Python rollout scripts
 |--------|---------|
 | Install | `n/a` |
 | Run | `gh workflow run nightly-health-check.yml -R dizhaky/.github` |
-| Test | `python3 -m unittest discover -s tests -p "test_*.py"` |
+| Test | `python3 -m pytest -q tests` |
 | Lint | `n/a` |
 
 ## Tooling
@@ -46,6 +46,6 @@ Skip only for typo-only or comment-only edits.
 
 - `.github/workflows/post-merge-review-capture.yml` records late reviews as GitHub issues using `GITHUB_TOKEN`, without Hermes or webhook secrets. It does not enable hosted automatic Code Review or change merge gates.
 - Requires Issues enabled and `issues: write`; skipped author replies and pre-merge reviews do not create issues. Lookup failures fail closed rather than creating duplicates.
-- Tests: `python3 -m unittest discover -s tests -p "test_*.py"`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
+- Tests: `python3 -m pytest -q tests`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
 
-- Template tests require pytest (`python3 -m pip install "pytest>=8,<10"`) for disposable child-process isolation probes. CI runs unittest discovery on pushes and PRs.
+- Template tests require pytest (`python3 -m pip install "pytest>=8,<10"`) for import-time isolation and disposable child-process probes. CI runs pytest on pushes and PRs.

@@ -23,6 +23,25 @@ class ReviewRunbookTest(unittest.TestCase):
         self.assertIn("CLAUDE.md", section)
         self.assertIn("12 KiB", section)
         self.assertNotIn("do NOT read CLAUDE.md/AGENTS.md", section)
+        self.assertNotIn("Bash(gh api:*)", section)
+        self.assertIn("Bash(gh api --method GET repos/$REPO/contents/AGENTS.md?ref=$BASE_SHA)", section)
+        self.assertIn("Bash(gh api --method GET repos/$REPO/contents/CLAUDE.md?ref=$BASE_SHA)", section)
+
+    def test_primary_commands_and_ci_use_pytest_isolation(self):
+        claude = (ROOT / "CLAUDE.md").read_text()
+        workflow = (ROOT / ".github/workflows/template-tests.yml").read_text()
+        self.assertIn('| Test | `python3 -m pytest -q tests` |', claude)
+        self.assertIn("python -m pytest -q tests", workflow)
+        self.assertTrue((ROOT / "tests/conftest.py").is_file())
+
+    def test_new_system_log_entries_have_canonical_metadata(self):
+        log = (ROOT / "docs/system-log/2026-09-06.md").read_text()
+        entries = [part for part in log.split("\n## ")[1:] if part.strip()]
+        self.assertGreaterEqual(len(entries), 2)
+        for entry in entries:
+            heading = entry.splitlines()[0]
+            self.assertRegex(heading, r"^2026-09-06T\d{2}:\d{2}:\d{2}Z")
+            self.assertIn("- **Agent/tool:**", entry)
 
     def test_missing_historical_audits_are_present(self):
         august_8 = (ROOT / "docs/system-log/2026-08-08.md").read_text()

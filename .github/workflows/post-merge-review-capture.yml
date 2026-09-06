@@ -38,7 +38,9 @@ permissions:
 jobs:
   capture:
     concurrency:
-      group: post-merge-review-${{ github.event.pull_request.number }}-${{ github.event.review.user.login }}
+      # A shared PR/reviewer group can retain only one pending run; a third
+      # review would cancel the middle event even with cancel-in-progress false.
+      group: post-merge-review-${{ github.event.review.id }}
       cancel-in-progress: false
     # No job-level condition: the `pull_request` object in a
     # pull_request_review payload is a reduced form and does NOT reliably
@@ -63,6 +65,7 @@ jobs:
           REVIEW_STATE: ${{ github.event.review.state }}
           REVIEW_BODY: ${{ github.event.review.body }}
           REVIEW_SUBMITTED_AT: ${{ github.event.review.submitted_at }}
+          REVIEW_ID: ${{ github.event.review.id }}
         run: |
           set -euo pipefail
 
@@ -115,7 +118,7 @@ jobs:
             LEAD="A review was submitted **after** this PR was merged, so it never gated the merge and lands on a closed PR."
           fi
 
-          TITLE="Post-merge review on #${PR_NUMBER} by ${REVIEWER}"
+          TITLE="Post-merge review ${REVIEW_ID} on #${PR_NUMBER} by ${REVIEWER}"
 
           # Build the body in a file so no untrusted text is ever a shell word.
           BODY_FILE="$(mktemp)"
@@ -142,10 +145,10 @@ jobs:
           } > "$BODY_FILE"
 
           # Fail closed if lookup fails: an API outage must not create duplicates.
-          # One issue per (PR, reviewer). A second review from the same
-          # reviewer comments on the existing issue instead of opening another.
+          # One issue per review event. The review ID makes concurrent events
+          # independent while a replay of the same delivery remains idempotent.
           EXISTING=$(gh issue list --repo "$REPO" --state open \
-            --search "$TITLE in:title" --json number,title \
+            --limit 1000 --json number,title \
             --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty" )
 
           if [ -n "$EXISTING" ]; then
