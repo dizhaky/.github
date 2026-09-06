@@ -36,7 +36,7 @@ Skip only for typo-only or comment-only edits.
 ## References
 
 - Test-Suite Isolation Standard: [TEST-ISOLATION.md](docs/TEST-ISOLATION.md) ([canonical](https://github.com/dizhaky/.github/blob/main/docs/TEST-ISOLATION.md))
-- Unified Gateway Cookbook: [UNIFIED-GATEWAY-COOKBOOK.md](file:///Users/danizhaky/.claude/refs/UNIFIED-GATEWAY-COOKBOOK.md)
+- Unified Gateway Cookbook: [dotfiles canonical copy](https://github.com/dizhaky/dotfiles/blob/main/.claude/refs/UNIFIED-GATEWAY-COOKBOOK.md)
 - System log format: `docs/system-log/README.md`
 - Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=obsidian-vault&file=Projects/Tech/GitHub%20Ops/01_Reference/RUNBOOKS)
 - Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=obsidian-vault&file=Projects/Tech/Agent%20Documentation/01_Reference/STANDARDS)
