@@ -249,18 +249,25 @@ the workflow must ALLOW them. Without this, claude-review runs green but posts
 zero comments (DAN-2545, dotfiles #633 / kb-daemon #514).
 
 ```yaml
-claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh api --method GET \"repos/$REPO/contents/$RULE_PATH?ref=$BASE_SHA\" --jq .content | base64 --decode | head -c 12288 | head -n 200),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
 ```
-- grants the inline-comment MCP tool + `gh pr comment/diff/view` (review-only,
-  no file writes/git). Without `--allowedTools` granting these, the agent has
+- grants the inline-comment MCP tool, one exact read-only bounded decode command
+  parameterized by `RULE_PATH`, and `gh pr comment/diff/view` (no file writes/git).
+  Without `--allowedTools` granting these, the agent has
   no way to post.
 
 The **prompt** must tell the agent to POST (not output text):
-- include `REPO: ${{ github.repository }}` + `PR NUMBER: ${{ github.event.pull_request.number }}`
+- include `REPO: ${{ github.repository }}`, `PR NUMBER: ${{ github.event.pull_request.number }}`, and `BASE_SHA: ${{ github.event.pull_request.base.sha }}`
+- before reading the diff, set `RULE_PATH` to `AGENTS.md` and `CLAUDE.md` and run the granted bounded decode command for each; then derive every ancestor directory from `gh pr diff --name-only`, set `RULE_PATH` to each ancestor's `AGENTS.md`, and fetch each applicable file from `BASE_SHA`; ignore 404s and cap every decoded file at 12 KiB / 200 lines so root and subtree review/security rules are honored without exhausting the turn budget
 - "Use `gh pr comment <PR NUMBER> --body '...'` for a top-level summary (or LGTM)"
 - "Use `mcp__github_inline_comment__create_inline_comment` with `confirmed: true` to annotate a specific line"
 - "Post your review as GitHub comments ONLY — do NOT submit review text as a chat message"
-- constrain reading to `gh pr diff` (do NOT read CLAUDE.md/AGENTS.md — that burns turns -> `error_max_turns`)
+- after the bounded base-revision instruction read, constrain code reading to `gh pr diff`
 
 Canonical recipe: anthropics/claude-code-action `docs/solutions.md` -> "Automatic PR Code Review". Proven on dizhaky/dotfiles (PR #642; verified a review posted on PR #640 — ~$0.19/review, 5 turns).
 

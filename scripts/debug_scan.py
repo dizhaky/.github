@@ -88,7 +88,7 @@ def main() -> int:
     if auto_merge.exists():
         text = auto_merge.read_text()
         has_production_or = "dependency-type == 'direct:production'" in text
-        has_ecosystem_guard = "package-ecosystem == 'github-actions'" in text
+        has_ecosystem_guard = "package-ecosystem == 'github_actions'" in text
         log("D", "debug_scan.py:auto-merge", "dependabot auto-merge if", {
             "has_direct_production_in_if": has_production_or,
             "has_ecosystem_guard": has_ecosystem_guard,
