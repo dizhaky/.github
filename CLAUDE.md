@@ -38,3 +38,9 @@ Skip only for typo-only or comment-only edits.
 - Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=obsidian-vault&file=Projects/Tech/GitHub%20Ops/01_Reference/RUNBOOKS)
 - Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=obsidian-vault&file=Projects/Tech/Agent%20Documentation/01_Reference/STANDARDS)
 - Central templates: [dizhaky/.github](https://github.com/dizhaky/.github)
+
+## GitHub-native review capture
+
+- `.github/workflows/post-merge-review-capture.yml` records late reviews as GitHub issues using `GITHUB_TOKEN`, without Hermes or webhook secrets. It does not enable hosted automatic Code Review or change merge gates.
+- Requires Issues enabled and `issues: write`; skipped author replies and pre-merge reviews do not create issues. Lookup failures fail closed rather than creating duplicates.
+- Tests: `python3 -m unittest discover -s tests -p "test_*.py"`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
