@@ -18,6 +18,7 @@
 ## Tooling
 
 - **Cursor rules:** `.cursor/rules/karpathy-four-rules.mdc` — required always-on Karpathy four rules ([canonical](https://github.com/dizhaky/.github/blob/main/docs/KARPATHY-RULES.md)); install: `~/Dev/dotfiles/cursor/bin/install-karpathy-repo-rules.sh`
+- **Test Isolation:** Follow the [Test-Suite Isolation Standard](https://github.com/dizhaky/.github/blob/main/docs/TEST-ISOLATION.md).
 - **Skills:** Repo-specific skills in `.cursor/skills/` or user-level `~/.cursor/skills-cursor/`
 - **MCP:** Configure per project; never log tokens or credentials
 
