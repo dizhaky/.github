@@ -254,10 +254,11 @@ permissions:
   issues: write
   pull-requests: write
 
-claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
+claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh api --method GET repos/$REPO/contents/AGENTS.md?ref=$BASE_SHA),Bash(gh api --method GET repos/$REPO/contents/CLAUDE.md?ref=$BASE_SHA),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)" --max-turns 8'
 ```
-- grants the inline-comment MCP tool + `gh api` and `gh pr comment/diff/view` (review-only,
-  no file writes/git). Without `--allowedTools` granting these, the agent has
+- grants the inline-comment MCP tool, two exact read-only `gh api --method GET`
+  instruction fetches, and `gh pr comment/diff/view` (no file writes/git).
+  Without `--allowedTools` granting these, the agent has
   no way to post.
 
 The **prompt** must tell the agent to POST (not output text):
