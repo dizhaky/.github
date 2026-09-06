@@ -7,7 +7,7 @@
 
 ## 1. Purpose & Problem Statement
 
-Developer workstations, local agent sessions, and CI runners are stateful environments. A developer machine typically hosts live SQLite databases (`~/.hermes/state.db`, `kanban.db`), live Obsidian vaults, real CRM directories, active logging streams (`~/.hermes/logs/agent.log`), and live API keys in the environment or macOS Keychain.
+Developer workstations, local agent sessions, and CI runners are stateful environments. A developer machine typically hosts live SQLite databases (`~/.app-state/state.db`, `kanban.db`), live Obsidian vaults, real CRM directories, active logging streams (`~/.app-state/logs/agent.log`), and live API keys in the environment or macOS Keychain.
 
 When automated test suites run, **unisolated suites risk severe state corruption and credential leakage**:
 
@@ -34,8 +34,8 @@ When automated test suites run, **unisolated suites risk severe state corruption
 │ 2. Default-Deny Credential     │ Scrub all credential-shaped env vars       │
 │    Pattern Scrubbing           │ (_API_KEY, _TOKEN, _SECRET, etc.).         │
 ├────────────────────────────────┼────────────────────────────────────────────┤
-│ 3. State Path Sandboxing       │ Redirect HERMES_*, VAULT_*, CRM_*, KB_* to │
-│    & Fail-Closed Guards        │ tmpdir; intercept writes to real paths.    │
+│ 3. State Path Redirection      │ Redirect configured state roots to tmpdir; │
+│    & Repository Guards         │ add app-specific DB and write guards.       │
 ├────────────────────────────────┼────────────────────────────────────────────┤
 │ 4. OS Keychain & Platform      │ Neutralize macOS Keychain / security CLI   │
 │    Isolation                   │ lookups and browser/audio popups.          │
@@ -52,12 +52,12 @@ When automated test suites run, **unisolated suites risk severe state corruption
 **Problem:** In `pytest`, test collection imports product modules *before* any test fixtures (even `autouse=True` fixtures) execute. If a product module computes a module-level constant at import time:
 ```python
 # product_module.py
-DEFAULT_DB_PATH = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+DEFAULT_DB_PATH = Path(os.environ.get("APP_HOME", Path.home() / ".app-state")) / "state.db"
 ```
 Or initializes file logging at module scope:
 ```python
 # main.py
-setup_logging()  # Attaches FileHandler to ~/.hermes/logs/agent.log
+setup_logging()  # Attaches FileHandler to ~/.app-state/logs/agent.log
 ```
 An autouse fixture running during test setup is **too late**—the handler or constant has already bound to the developer's real filesystem path.
 
@@ -73,10 +73,10 @@ import os
 import shutil
 import tempfile
 
-if not os.environ.get("HERMES_TEST_ISOLATED"):
+if not os.environ.get("APP_TEST_ISOLATED"):
     _SESSION_TMP_DIR = tempfile.mkdtemp(prefix="repo-test-sandbox-")
-    os.environ["HERMES_HOME"] = _SESSION_TMP_DIR
-    os.environ["HERMES_TEST_ISOLATED"] = "1"
+    os.environ["APP_HOME"] = _SESSION_TMP_DIR
+    os.environ["APP_TEST_ISOLATED"] = "1"
     atexit.register(shutil.rmtree, _SESSION_TMP_DIR, True)
 ```
 
@@ -117,13 +117,13 @@ if not os.environ.get("HERMES_TEST_ISOLATED"):
 
 ---
 
-### Principle 3: State Path Sandboxing & Fail-Closed Guards
+### Principle 3: State Path Redirection & Repository-Specific Guards
 
-**Problem:** Repositories interacting with persistent state (Hermes, Obsidian Vault, CRM, Knowledge Base, Memory daemons) use environment variables to locate state directories.
+**Problem:** Repositories interacting with persistent state (vaults, CRM systems, knowledge bases, and memory daemons) use environment variables to locate state directories.
 
 **Rule:**
 - Isolate all known state root variables to temporary test directories:
-  - `HERMES_*`: `HERMES_HOME`, `HERMES_KANBAN_HOME`, `HERMES_KANBAN_DB`, `HERMES_SESSION_*`
+  - Application-specific variables such as `APP_HOME`, `APP_STATE_DIR`, and `APP_DB_PATH`
   - `OBSIDIAN_VAULT*` / `CRM_*`: `CRM_VAULT_ROOT`, `CRM_STATE_DIR`, `OBSIDIAN_VAULT`
   - `KB_*`: `KB_STATE_DIR`, `KB_API_TOKEN`
   - `MEMORY_*`: `PERSISTENT_MEMORY_PATH`, `MEMORY_DB_PATH`
@@ -151,33 +151,39 @@ if not os.environ.get("HERMES_TEST_ISOLATED"):
 - Dictionary and set iteration order changing across runs without fixed hash seeds.
 - AWS SDK initialization attempting to reach the EC2 Instance Metadata Service (IMDS) at `169.254.169.254`, causing 2-second timeout hangs per test.
 
-**Rule:**
-In the autouse fixture, enforce:
-```python
-monkeypatch.setenv("TZ", "UTC")
-monkeypatch.setenv("LANG", "C.UTF-8")
-monkeypatch.setenv("LC_ALL", "C.UTF-8")
-monkeypatch.setenv("PYTHONHASHSEED", "0")
-monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
-monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
-monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
+**Rule:** Set process-wide determinism flags before starting Python, in CI or the
+test runner. A fixture is too late to choose the current interpreter's hash seed
+or initialize its locale. Repository code that changes `TZ` inside a running
+process must also call `time.tzset()` where the platform supports it.
+```yaml
+env:
+  TZ: UTC
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  PYTHONHASHSEED: '0'
+  AWS_EC2_METADATA_DISABLED: 'true'
+  AWS_METADATA_SERVICE_TIMEOUT: '1'
+  AWS_METADATA_SERVICE_NUM_ATTEMPTS: '1'
 ```
 
 ---
 
 ## 3. Canonical `conftest.py` Blueprint
 
-Below is the standard, production-tested blueprint for Python repositories. Copy and adapt this into `<repo>/tests/conftest.py`.
+This minimal scaffold redirects configured paths and scrubs ambient credentials before test collection. Adapt it into `<repo>/tests/conftest.py`; it is **not an OS sandbox** and does not by itself block arbitrary filesystem, database, subprocess, keychain, or network access. Run untrusted or integration tests in a disposable container with no secrets and denied outbound network, and add repository-specific write/DB/client guards before claiming fail-closed isolation.
+
+Keep session paths stable for modules that cache them during import. Tests needing distinct paths must inject paths explicitly or use a separate process, rather than changing the environment underneath cached constants. Set `PYTHONHASHSEED=0` in the invoking shell or CI **before Python starts**; setting it in a fixture affects child interpreters only.
 
 ```python
-"""Canonical hermetic test configuration and fixtures.
+"""Baseline test configuration and fixtures.
 
-Enforces the 5 Core Principles of Test Isolation:
+Provides a safe baseline for:
 1. Import-time sandboxing of persistent state directories
 2. Default-deny credential pattern scrubbing
-3. State path sandboxing & fail-closed write guards
-4. OS Keychain and platform isolation
-5. Deterministic runtime environment (TZ, LANG, hashseed, IMDS)
+3. Configured state path redirection (not an OS write guard)
+4. Browser/UI neutralization during test execution
+
+Add repository-specific network, keychain, database, and filesystem guards.
 """
 
 from __future__ import annotations
@@ -189,7 +195,6 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Generator
-from unittest.mock import patch
 
 import pytest
 
@@ -199,20 +204,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ── 1. IMPORT-TIME STATE SANDBOXING ─────────────────────────────────────────
-# Capture the REAL pre-sandbox roots BEFORE rewiring environment variables.
-_REAL_USER_HOME = Path.home().resolve()
-_PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
-_PRE_SANDBOX_VAULT_ROOT = os.environ.get("CRM_VAULT_ROOT", "")
+# Configure every state root consumed by the project before importing it.
 
 # Create session-level temporary sandbox directory
 _SESSION_SANDBOX = tempfile.mkdtemp(prefix="test-sandbox-")
-os.environ["HERMES_HOME"] = str(Path(_SESSION_SANDBOX) / "hermes")
+os.environ["APP_HOME"] = str(Path(_SESSION_SANDBOX) / "app-state")
 os.environ["CRM_VAULT_ROOT"] = str(Path(_SESSION_SANDBOX) / "vault")
 os.environ["CRM_STATE_DIR"] = str(Path(_SESSION_SANDBOX) / "crm_state")
 os.environ["KB_STATE_DIR"] = str(Path(_SESSION_SANDBOX) / "kb_state")
 
 # Record for import-time assertion in guard tests
-HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
+APP_HOME_AT_CONFTEST_IMPORT = os.environ.get("APP_HOME", "")
 
 atexit.register(shutil.rmtree, _SESSION_SANDBOX, True)
 
@@ -271,39 +273,28 @@ def _is_credential_var(name: str) -> bool:
     return any(name.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES)
 
 
+# Fixtures run after collection: scrub once now, before any project import.
+for _name in list(os.environ):
+    if _is_credential_var(_name):
+        os.environ.pop(_name, None)
+
+
 # ── 3. HERMETIC ENVIRONMENT AUTOUSE FIXTURE ─────────────────────────────────
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
-    """Isolate credentials, filesystem paths, and runtime determinism per test."""
+def _hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Scrub credentials and disable IMDS for clients initialized per test."""
     # A. Scrub all credential-bearing environment variables
     for var_name in list(os.environ.keys()):
         if _is_credential_var(var_name):
             monkeypatch.delenv(var_name, raising=False)
 
-    # B. Deterministic runtime flags
-    monkeypatch.setenv("TZ", "UTC")
-    monkeypatch.setenv("LANG", "C.UTF-8")
-    monkeypatch.setenv("LC_ALL", "C.UTF-8")
-    monkeypatch.setenv("PYTHONHASHSEED", "0")
-
-    # C. Disable AWS EC2 Metadata lookups to prevent timeout latency
+    # B. Disable AWS EC2 Metadata lookups for child clients initialized in tests
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
 
-    # D. Isolate filesystem paths per test
-    test_hermes_home = tmp_path / "hermes_home"
-    test_hermes_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(test_hermes_home))
-
-    test_vault = tmp_path / "vault"
-    test_vault.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("CRM_VAULT_ROOT", str(test_vault))
-    monkeypatch.setenv("CRM_STATE_DIR", str(tmp_path / "crm_state"))
-
-    # E. Neutralize macOS Keychain lookups by default
-    with patch("shutil.which", side_effect=lambda cmd: None if cmd == "security" else shutil.which(cmd)):
-        yield
+    # C. Keep import-time state paths stable; inject per-test paths explicitly.
+    yield
 
 
 # ── 4. BROWSER & SYSTEM INTERACTION NEUTRALIZATION ──────────────────────────
@@ -339,57 +330,35 @@ every repository must maintain a **Guard Test** that spawns an isolated subproce
 ### Canonical Guard Test (`tests/test_isolation_guard.py`)
 
 ```python
-"""Contract test verifying test suite isolation and import-time sandboxing."""
-
-from __future__ import annotations
-
+"""Run pytest itself so the real conftest lifecycle is exercised."""
 import os
+from pathlib import Path
+import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 
-def test_conftest_sandboxes_state_before_module_imports():
-    """Verify that conftest.py redirects state paths at import time."""
-    from tests.conftest import HERMES_HOME_AT_CONFTEST_IMPORT
-
-    real_home = Path.home().resolve()
-    assert HERMES_HOME_AT_CONFTEST_IMPORT, "conftest must set HERMES_HOME at import time"
-    assert Path(HERMES_HOME_AT_CONFTEST_IMPORT).resolve() != real_home, (
-        f"HERMES_HOME pointed at real home ({HERMES_HOME_AT_CONFTEST_IMPORT}) during conftest import"
+def test_collection_isolation(tmp_path):
+    # A non-package directory avoids importing tests.conftest a second time.
+    shutil.copyfile(Path(__file__).with_name("conftest.py"), tmp_path / "conftest.py")
+    (tmp_path / "test_probe.py").write_text(
+        'import os\n'
+        'assert "TEST_SERVICE_API_KEY" not in os.environ\n'
+        'assert "LINEAR_API_KEY" not in os.environ\n'
+        'assert os.environ["CRM_STATE_DIR"] != "ambient-state-sentinel"\n'
+        'def test_probe(): pass\n'
     )
-
-
-def test_subprocess_credential_scrubbing_contract():
-    """Spawn a clean Python subprocess with fake exported keys and verify scrubbing."""
-    probe_code = """
-import os
-import pytest
-import sys
-
-# Run pytest collection on an in-memory or dummy check
-from tests.conftest import _is_credential_var
-
-# Verify credential detection
-assert _is_credential_var("TEST_SERVICE_API_KEY") is True
-assert _is_credential_var("AWS_SECRET_ACCESS_KEY") is True
-assert _is_credential_var("SAFE_CONFIG_PATH") is False
-print("GUARD_PROBE_PASSED")
-"""
-    env = dict(os.environ)
-    env["TEST_SERVICE_API_KEY"] = "sentinel-key-12345"
-    env["LINEAR_API_KEY"] = "sentinel-linear-key"
-
+    env = {
+        "PATH": os.environ["PATH"], "HOME": str(tmp_path),
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONHASHSEED": "0",
+        "TEST_SERVICE_API_KEY": "sentinel", "LINEAR_API_KEY": "sentinel",
+        "CRM_STATE_DIR": "ambient-state-sentinel",
+    }
     result = subprocess.run(
-        [sys.executable, "-c", probe_code],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+        [sys.executable, "-m", "pytest", "-q", str(tmp_path / "test_probe.py")],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
     )
-
-    assert result.returncode == 0, f"Probe failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-    assert "GUARD_PROBE_PASSED" in result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
 ```
 
 ---
@@ -399,7 +368,7 @@ print("GUARD_PROBE_PASSED")
 When creating or maintaining a repository:
 
 - [ ] **`tests/conftest.py`**: Sandboxes state environment variables at module scope (before project imports).
-- [ ] **Credential Filter**: Autouse fixture scrubs `_CREDENTIAL_SUFFIXES` and `_CREDENTIAL_NAMES`.
-- [ ] **Deterministic Flags**: Autouse fixture sets `TZ=UTC`, `LANG=C.UTF-8`, `PYTHONHASHSEED=0`, `AWS_EC2_METADATA_DISABLED=true`.
-- [ ] **Keychain Neutralization**: Intercepts macOS `security` CLI and keyring resolvers.
-- [ ] **Guard Test**: `tests/test_isolation_guard.py` asserts fail-closed behavior.
+- [ ] **Credential Filter**: Module initialization and the autouse fixture scrub `_CREDENTIAL_SUFFIXES` and `_CREDENTIAL_NAMES`.
+- [ ] **Deterministic Flags**: Set timezone, locale, hashseed, and IMDS variables before invoking Python.
+- [ ] **Keychain Neutralization**: Add and test repository-specific guards for every keychain access path; the baseline scaffold does not provide this.
+- [ ] **Guard Test**: `tests/test_isolation_guard.py` proves pre-collection credential scrubbing and configured-path redirection. Add separate tests for network, database, subprocess, and filesystem guards.
