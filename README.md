@@ -17,6 +17,7 @@ All dizhaky repos and automation should follow **[Karpathy's Four Rules](docs/KA
 | `reusable-ci.yml` | Node (npm/pnpm/yarn) + Python lint/test/build with optional `strict` mode |
 | `reusable-secret-scan.yml` | Gitleaks on every push and PR |
 | `reusable-nightly-maintenance.yml` | Full secret scan, alert report, optional auto-fix PR (ruff/audit) |
+| `reusable-scan-failure-alert.yml` | Opens a deduplicated issue when a scan goes red on a default branch, closes it on recovery; optional Slack post |
 | `nightly-health-check.yml` | **Scheduled** account-wide health scan (06:00 UTC); needs `GH_PAT` secret |
 
 ## Nightly automation
@@ -26,8 +27,9 @@ All dizhaky repos and automation should follow **[Karpathy's Four Rules](docs/KA
 | `nightly-maintenance.yml` | `.github/workflows/` | Per-repo nightly maintenance (06:30 UTC) |
 | `dependabot-auto-merge.yml` | `.github/workflows/` | Auto-merge safe github-actions Dependabot PRs |
 | `codeql.yml` | `.github/workflows/` | Weekly CodeQL (requires GHAS on private repos) |
+| `secret-scan-alert.yml` | `.github/workflows/` | Alert when `Secret Scan` goes red on the default branch |
 
-**Secrets:** Add `GH_PAT` (classic, `repo` scope) to this repo for cross-repo account health checks. Per-repo workflows use `GITHUB_TOKEN`. See **[docs/RUNBOOKS.md](docs/RUNBOOKS.md)** for GH_PAT, GHAS/CodeQL, and optional Claude review setup.
+**Secrets:** Add `GH_PAT` (classic, `repo` scope) to this repo for cross-repo account health checks. Per-repo workflows use `GITHUB_TOKEN`. `secret-scan-alert.yml` optionally uses `SLACK_WEBHOOK_URL`; without it the GitHub issue is still filed and the Slack step skips rather than failing. See **[docs/RUNBOOKS.md](docs/RUNBOOKS.md)** for GH_PAT, GHAS/CodeQL, and optional Claude review setup.
 
 **Vault sync:** Operational supplements from Obsidian `Projects/Tech/github-ops/` live in **[docs/from-vault/](docs/from-vault/)** (cheatsheet, rollout, nightly automation).
 
