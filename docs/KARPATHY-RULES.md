@@ -2,11 +2,11 @@
 
 Agent coding principles for LLM-assisted development. Canonical Cursor rule: [`karpathy-four-rules.mdc`](../.cursor/rules/karpathy-four-rules.mdc). Repo template: [`.github/repo-templates/cursor-rules-karpathy.mdc`](../.github/repo-templates/cursor-rules-karpathy.mdc).
 
-**Source:** [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) — Andrej Karpathy's Jan 2026 field notes on LLM coding agents. Biases toward caution over speed; use judgment on trivial tasks.
+Derived from Andrej Karpathy's Jan 2026 field notes on LLM coding agents. Biases toward care in what gets written — think first, keep it minimal, edit surgically, verify — never toward pausing the work; rule 1 settles uncertainty and you keep going.
 
 | # | Rule | One-liner |
 |---|------|-----------|
-| 1 | **Think Before Coding** | Don't assume; surface tradeoffs and ask when unclear. |
+| 1 | **Think Before Coding** | State assumptions and proceed on the most likely; don't stop to ask. |
 | 2 | **Simplicity First** | Minimum code that solves the problem — nothing speculative. |
 | 3 | **Surgical Changes** | Touch only what you must; every changed line traces to the request. |
 | 4 | **Goal-Driven Execution** | Define success criteria and verify before calling work done. |
@@ -17,8 +17,10 @@ Agent coding principles for LLM-assisted development. Canonical Cursor rule: [`k
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-- State assumptions; ask when uncertain. Present multiple interpretations — don't pick silently.
-- Push back when warranted. Stop and ask if something is unclear.
+- State assumptions out loud and proceed on the most likely one; don't pick interpretations silently, and don't stop to ask.
+- Where readings differ, say which one you took and why, then keep going. Ask only when every reading leads to materially different work *and* proceeding on the wrong one would be unsafe or waste the work.
+- Push back when warranted — in the work, as a stated objection you then act past, not as a question that halts it.
+- The only stop is a destructive or irreversible action — delete, overwrite, force-push, money, external send — which gets confirmed first with the exact target named. Rotating an already-exposed secret is the exception: it is compromised the moment it leaks, so it goes immediately without confirmation.
 
 ### 2. Simplicity First
 
