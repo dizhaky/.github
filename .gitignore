@@ -1,4 +1,4 @@
 .dependabot-merged.json
 .dependabot-prs.tsv
-scripts/__pycache__/
+__pycache__/
 .cursor/debug-*.log
