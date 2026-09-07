@@ -86,7 +86,7 @@ jobs:
           [ "$API_REVIEW_ID" = "$REVIEW_ID" ]
           REVIEWER=$(jq -r '.user.login' <<<"$REVIEW_JSON")
           case "$REVIEWER" in
-            'chatgpt-codex-connector[bot]'|'copilot-pull-request-reviewer[bot]'|'github-actions[bot]') ;;
+            'chatgpt-codex-connector[bot]'|'greptile-apps[bot]'|'copilot-pull-request-reviewer[bot]'|'github-actions[bot]') ;;
             *)
               echo "Review is by unsupported reviewer $REVIEWER - nothing to capture"
               exit 0

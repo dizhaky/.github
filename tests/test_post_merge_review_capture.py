@@ -196,6 +196,12 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         self.assertIn("including inline comments", mutations[0]["body"])
         self.assertIn("branch release", mutations[0]["body"])
 
+    def test_greptile_late_review_creates_issue(self):
+        result, mutations = self.run_capture(reviewer="greptile-apps[bot]")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
+        self.assertIn("greptile-apps[bot]", " ".join(mutations[0]["args"]))
+
     def test_open_pr_does_not_create_issue(self):
         result, mutations = self.run_capture(merged=False)
         self.assertEqual(result.returncode, 0, result.stderr)
