@@ -1,0 +1,173 @@
+# Trusted receiver for fork-safe post-merge review capture. It never checks out
+# or executes PR code. The artifact contains only numeric IDs, which are
+# validated against GitHub's API before this workflow writes an issue.
+name: Post-Merge Review Capture
+
+on:
+  workflow_run:
+    workflows: ["Post-Merge Review Payload"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  validate:
+    if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.identity.outputs.pr_number }}
+      review_id: ${{ steps.identity.outputs.review_id }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download identifier payload
+        uses: actions/download-artifact@v4
+        with:
+          name: post-merge-review
+          path: review-payload
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate source identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PAYLOAD_FILE: review-payload/review.json
+        run: |
+          set -euo pipefail
+
+          PR_NUMBER=$(jq -er '.pr_number | select(type == "number")' "$PAYLOAD_FILE")
+          REVIEW_ID=$(jq -er '.review_id | select(type == "number")' "$PAYLOAD_FILE")
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$REVIEW_ID" =~ ^[0-9]+$ ]]
+
+          # workflow_run metadata comes from GitHub, never from the artifact.
+          # Empty PR associations must fail visibly rather than trusting the payload.
+          jq -e --argjson pr "$PR_NUMBER" '
+            .workflow_run.event == "pull_request_review" and
+            .workflow_run.path == ".github/workflows/post-merge-review-payload.yml" and
+            any(.workflow_run.pull_requests[]?; .number == $pr)
+          ' "$GITHUB_EVENT_PATH" > /dev/null
+          REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID")
+          ACTOR_ID=$(jq -er '.workflow_run.actor.id' "$GITHUB_EVENT_PATH")
+          jq -e --argjson review "$REVIEW_ID" --argjson actor "$ACTOR_ID" '
+            .id == $review and .user.id == $actor
+          ' <<<"$REVIEW_JSON" > /dev/null
+          printf 'pr_number=%s\nreview_id=%s\n' "$PR_NUMBER" "$REVIEW_ID" >> "$GITHUB_OUTPUT"
+
+  capture:
+    needs: validate
+    concurrency:
+      group: post-merge-review-${{ needs.validate.outputs.review_id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.validate.outputs.pr_number }}
+          REVIEW_ID: ${{ needs.validate.outputs.review_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$REVIEW_ID" =~ ^[0-9]+$ ]]
+
+          # Fetch every untrusted field from GitHub, not from the artifact.
+          REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID")
+          API_REVIEW_ID=$(jq -r '.id' <<<"$REVIEW_JSON")
+          [ "$API_REVIEW_ID" = "$REVIEW_ID" ]
+          REVIEWER=$(jq -r '.user.login' <<<"$REVIEW_JSON")
+          case "$REVIEWER" in
+            'chatgpt-codex-connector[bot]'|'copilot-pull-request-reviewer[bot]'|'github-actions[bot]') ;;
+            *)
+              echo "Review is by unsupported reviewer $REVIEWER - nothing to capture"
+              exit 0
+              ;;
+          esac
+
+          PR_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          MERGED=$(jq -r '.merged' <<<"$PR_JSON")
+          if [ "$MERGED" != "true" ]; then
+            echo "PR #$PR_NUMBER is not merged (merged=$MERGED) - nothing to capture"
+            exit 0
+          fi
+
+          PR_AUTHOR=$(jq -r '.user.login' <<<"$PR_JSON")
+          if [ "$REVIEWER" = "$PR_AUTHOR" ]; then
+            echo "Review is by the PR author ($PR_AUTHOR) - nothing to capture"
+            exit 0
+          fi
+
+          PR_TITLE=$(jq -r '.title | gsub("[|\\r\\n]"; " ")' <<<"$PR_JSON")
+          PR_URL=$(jq -r '.html_url' <<<"$PR_JSON")
+          BASE_REF=$(jq -r '.base.ref' <<<"$PR_JSON")
+          MERGED_AT=$(jq -r '.merged_at' <<<"$PR_JSON")
+          REVIEW_URL=$(jq -r '.html_url' <<<"$REVIEW_JSON")
+          REVIEW_STATE=$(jq -r '.state' <<<"$REVIEW_JSON")
+          REVIEW_SUBMITTED_AT=$(jq -r '.submitted_at // ""' <<<"$REVIEW_JSON")
+          REVIEW_BODY=$(jq -r '(.body // "")[:12000]' <<<"$REVIEW_JSON")
+
+          if [ -z "$REVIEW_SUBMITTED_AT" ] || [ -z "$MERGED_AT" ] \
+             || [ "$MERGED_AT" = "null" ]; then
+            echo "Missing a timestamp - not capturing"
+            exit 0
+          fi
+          if [[ "$REVIEW_SUBMITTED_AT" < "$MERGED_AT" ]]; then
+            echo "Review predates the merge - nothing to capture"
+            exit 0
+          fi
+
+          if [ "$REVIEW_SUBMITTED_AT" = "$MERGED_AT" ]; then
+            LEAD="A review was submitted in the same second as this PR's merge. GitHub timestamps cannot establish which came first, but the review could not gate the completed merge."
+          else
+            LEAD="A review was submitted after this PR was merged, so it never gated the merge and lands on a closed PR."
+          fi
+
+          TITLE="Post-merge review $REVIEW_ID on #$PR_NUMBER by $REVIEWER"
+          MARKER="<!-- post-merge-review:$REVIEW_ID -->"
+          BODY_FILE="$(mktemp)"
+          trap 'rm -f "$BODY_FILE"' EXIT
+          {
+            printf '%s\n\n' "$MARKER"
+            printf '%s\n\n' "$LEAD"
+            printf '| | |\n|---|---|\n'
+            printf '| PR | [#%s](%s) |\n' "$PR_NUMBER" "$PR_URL"
+            printf '| Title | %s |\n' "$PR_TITLE"
+            printf '| Base branch | %s |\n' "$BASE_REF"
+            printf '| Reviewer | %s |\n' "$REVIEWER"
+            printf '| Review state | %s |\n' "$REVIEW_STATE"
+            printf '| Merged at | %s |\n' "$MERGED_AT"
+            printf '| Review submitted | %s |\n' "$REVIEW_SUBMITTED_AT"
+            printf '\n**[Read the full review, including inline comments](%s)**\n' "$REVIEW_URL"
+            if [ -n "$REVIEW_BODY" ]; then
+              printf '\n---\n\n### Review body (bounded excerpt)\n\n%s\n' "$REVIEW_BODY"
+            fi
+            printf '\nThe code is already on branch %s. Triage it in a follow-up PR or close this issue if no action is needed.\n' "$BASE_REF"
+            printf '\n<sub>Opened by post-merge-review-capture.yml.</sub>\n'
+          } > "$BODY_FILE"
+
+          # REST pagination avoids both search-index lag and a fixed issue cap.
+          # Keep matching old titles for issues created before markers existed.
+          EXISTING=$(gh api --paginate --slurp \
+            "repos/$REPO/issues?state=all&per_page=100" | \
+            jq -r --arg title "$TITLE" --arg marker "$MARKER" '
+              [.[][] | select(.pull_request == null) |
+                select(.title == $title or
+                  ((.body // "") | startswith($marker + "\n")))][0].number // empty
+            ')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Review $REVIEW_ID is already captured in issue #$EXISTING"
+            exit 0
+          fi
+
+          gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+          echo "Opened a new tracking issue"
