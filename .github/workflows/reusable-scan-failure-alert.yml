@@ -41,7 +41,11 @@ on:
       artifact-name:
         type: string
         default: ""
-        description: "Optional gitleaks report artifact to enrich the alert with. Empty to skip."
+        description: >-
+          Optional. Comma-separated report artifact name(s) to enrich the alert with.
+          A run may publish more than one (e.g. a history scan and a working-tree
+          scan in the same run under different names); all that exist are merged.
+          Empty to skip enrichment entirely.
       issue-label:
         type: string
         default: "secret-scan-alert"
@@ -102,15 +106,35 @@ jobs:
           ARTIFACT: ${{ inputs.artifact-name }}
         run: |
           set -uo pipefail
-          mkdir -p _scan_report
-          # Absent artifact is expected and fine: the legibility PRs that publish
-          # it may not have merged yet. An alert that only works once another PR
-          # lands is not an alert.
-          if gh run download "$RUN_ID" --repo "$REPO" -n "$ARTIFACT" -D _scan_report 2>/dev/null; then
+          rm -rf _scan_report && mkdir -p _scan_report
+          # A run can publish several reports under different names -- the scan
+          # workflows deliberately avoid a shared name because upload-artifact v4
+          # rejects duplicates within one run. Take every one that exists and
+          # merge them, so an alert is never silently about only half the run.
+          FOUND=0
+          IFS=',' read -ra NAMES <<< "$ARTIFACT"
+          for raw in "${NAMES[@]}"; do
+            name="$(echo "$raw" | tr -d '[:space:]')"
+            [ -z "$name" ] && continue
+            # Absent is expected and fine: the workflows that publish these may
+            # not have merged yet. An alert that only works once another PR lands
+            # is not an alert.
+            if gh run download "$RUN_ID" --repo "$REPO" -n "$name" -D "_scan_report/$name" 2>/dev/null; then
+              echo "Downloaded artifact '${name}'."
+              FOUND=$((FOUND + 1))
+            else
+              echo "Artifact '${name}' not available on run ${RUN_ID}."
+            fi
+          done
+          if [ "$FOUND" -gt 0 ]; then
+            # Merge every report found into one array; tolerate a malformed file
+            # rather than losing the whole alert to it.
+            find _scan_report -name '*.json' -type f -print0 \
+              | xargs -0 -r jq -s 'add // []' > _scan_report/merged.json 2>/dev/null \
+              || echo '[]' > _scan_report/merged.json
             echo "downloaded=true" >> "$GITHUB_OUTPUT"
           else
             echo "downloaded=false" >> "$GITHUB_OUTPUT"
-            echo "Artifact '${ARTIFACT}' not available on run ${RUN_ID}."
           fi
 
       - name: Build the alert body
@@ -134,8 +158,8 @@ jobs:
             echo "- Commit: \`${COMMIT}\`"
             echo "- Run: ${RUN_URL}"
             echo ""
-            REPORT=$(find _scan_report -name '*.json' -type f 2>/dev/null | head -1)
-            if [ "${DOWNLOADED:-false}" != "true" ] || [ -z "$REPORT" ]; then
+            REPORT=_scan_report/merged.json
+            if [ "${DOWNLOADED:-false}" != "true" ] || [ ! -s "$REPORT" ]; then
               echo "No scan report artifact was published by that run, so this alert"
               echo "cannot name the finding. Open the run log above to locate it."
             elif [ "$(jq 'length' "$REPORT" 2>/dev/null || echo 0)" = "0" ]; then
