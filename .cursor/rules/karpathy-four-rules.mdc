@@ -4,7 +4,7 @@ alwaysApply: true
 ---
 # Karpathy's Four Rules
 
-Derived from Andrej Karpathy's Jan 2026 field notes on LLM coding agents ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)). Biases toward care in what gets written — think first, keep it minimal, edit surgically, verify — never toward pausing the work; rule 1 settles uncertainty and you keep going. Use judgment on trivial tasks.
+Derived from Andrej Karpathy's Jan 2026 field notes on LLM coding agents. Biases toward care in what gets written — think first, keep it minimal, edit surgically, verify — never toward pausing the work; rule 1 settles uncertainty and you keep going.
 
 ## 1. Think Before Coding
 
@@ -13,7 +13,7 @@ Derived from Andrej Karpathy's Jan 2026 field notes on LLM coding agents ([multi
 - State assumptions out loud and proceed on the most likely one; don't pick interpretations silently, and don't stop to ask.
 - Where readings differ, say which one you took and why, then keep going. Ask only when every reading leads to materially different work *and* proceeding on the wrong one would be unsafe or waste the work.
 - Push back when warranted — in the work, as a stated objection you then act past, not as a question that halts it.
-- The only stop is a destructive or irreversible action — delete, overwrite, force-push, money, external send — which gets confirmed first with the exact target named. Rotating an already-exposed secret is the exception: it is compromised the moment it leaks, so it goes immediately without confirmation. Blocked by missing access: name it, request the narrowest unblock, never fake completion.
+- The only stop is a destructive or irreversible action — delete, overwrite, force-push, money, external send — which gets confirmed first with the exact target named. Rotating an already-exposed secret is the exception: it is compromised the moment it leaks, so it goes immediately without confirmation.
 
 ## 2. Simplicity First
 
