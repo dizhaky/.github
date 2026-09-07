@@ -1,0 +1,268 @@
+# Alerting for a red scan on a default branch.
+#
+# The legibility workflows (reusable-secret-scan, reusable-nightly-maintenance)
+# make a failure say *where* the finding is. None of them makes anyone look:
+# obsidian-vault main sat red ~4.7h across five commits and was found only
+# because a PR tripped over it. This opens a deduplicated issue when a scan
+# goes red on the default branch, and closes it again on recovery.
+#
+# Called from a workflow_run trigger in the consuming repo -- workflow_run
+# cannot be declared here. See repo-templates/secret-scan-alert.yml.
+
+name: Reusable Scan Failure Alert
+
+on:
+  workflow_call:
+    inputs:
+      workflow-name:
+        type: string
+        required: true
+        description: "Name of the workflow that ran (used in the issue title and dedup marker)"
+      run-id:
+        type: string
+        required: true
+        description: "Run ID of the workflow that ran, for artifact download"
+      run-url:
+        type: string
+        required: true
+        description: "HTML URL of that run"
+      branch:
+        type: string
+        required: true
+        description: "Branch the run was on"
+      commit:
+        type: string
+        required: true
+        description: "Head SHA of that run"
+      conclusion:
+        type: string
+        required: true
+        description: "Conclusion of that run: failure opens an alert, success closes one"
+      artifact-name:
+        type: string
+        default: ""
+        description: >-
+          Optional. Comma-separated report artifact name(s) to enrich the alert with.
+          A run may publish more than one (e.g. a history scan and a working-tree
+          scan in the same run under different names); all that exist are merged.
+          Empty to skip enrichment entirely.
+      issue-label:
+        type: string
+        default: "secret-scan-alert"
+        description: "Label applied to alert issues; also how they are found again"
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+        description: "Optional. When unset, Slack notification is skipped, not failed."
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find any existing open alert
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          LABEL: ${{ inputs.issue-label }}
+          WORKFLOW: ${{ inputs.workflow-name }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -uo pipefail
+          # Dedup by listing the label and matching a marker in the body, NOT by
+          # the search API: search is index-delayed, so two runs close together
+          # can both miss an issue that already exists. A label listing is
+          # immediately consistent.
+          MARKER="<!-- scan-alert:${WORKFLOW}:${BRANCH} -->"
+          echo "marker=${MARKER}" >> "$GITHUB_OUTPUT"
+          if ! gh label list --repo "$REPO" --json name --jq '.[].name' 2>/dev/null | grep -qx "$LABEL"; then
+            gh label create "$LABEL" --repo "$REPO" \
+              --description "A scan failed on a default branch" --color B60205 2>/dev/null || true
+          fi
+          NUM=$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+                  --limit 100 --json number,body \
+                  --jq "[.[] | select(.body | contains(\"${MARKER}\"))] | .[0].number // empty" 2>/dev/null || true)
+          echo "number=${NUM}" >> "$GITHUB_OUTPUT"
+          if [ -n "$NUM" ]; then
+            echo "Found existing open alert: #${NUM}"
+          else
+            echo "No existing open alert for this workflow/branch."
+          fi
+
+      - name: Download the scan report, if one was published
+        id: report
+        if: inputs.conclusion == 'failure' && inputs.artifact-name != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run-id }}
+          ARTIFACT: ${{ inputs.artifact-name }}
+        run: |
+          set -uo pipefail
+          rm -rf _scan_report && mkdir -p _scan_report
+          # A run can publish several reports under different names -- the scan
+          # workflows deliberately avoid a shared name because upload-artifact v4
+          # rejects duplicates within one run. Take every one that exists and
+          # merge them, so an alert is never silently about only half the run.
+          FOUND=0
+          IFS=',' read -ra NAMES <<< "$ARTIFACT"
+          for raw in "${NAMES[@]}"; do
+            name="$(echo "$raw" | tr -d '[:space:]')"
+            [ -z "$name" ] && continue
+            # Absent is expected and fine: the workflows that publish these may
+            # not have merged yet. An alert that only works once another PR lands
+            # is not an alert.
+            if gh run download "$RUN_ID" --repo "$REPO" -n "$name" -D "_scan_report/$name" 2>/dev/null; then
+              echo "Downloaded artifact '${name}'."
+              FOUND=$((FOUND + 1))
+            else
+              echo "Artifact '${name}' not available on run ${RUN_ID}."
+            fi
+          done
+          if [ "$FOUND" -gt 0 ]; then
+            # Merge every report found into one array; tolerate a malformed file
+            # rather than losing the whole alert to it.
+            find _scan_report -name '*.json' -type f -print0 \
+              | xargs -0 -r jq -s 'add // []' > _scan_report/merged.json 2>/dev/null \
+              || echo '[]' > _scan_report/merged.json
+            echo "downloaded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "downloaded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the alert body
+        id: body
+        if: inputs.conclusion == 'failure'
+        shell: bash
+        env:
+          MARKER: ${{ steps.existing.outputs.marker }}
+          WORKFLOW: ${{ inputs.workflow-name }}
+          BRANCH: ${{ inputs.branch }}
+          COMMIT: ${{ inputs.commit }}
+          RUN_URL: ${{ inputs.run-url }}
+          DOWNLOADED: ${{ steps.report.outputs.downloaded }}
+        run: |
+          set -uo pipefail
+          {
+            echo "$MARKER"
+            echo ""
+            echo "**\`${WORKFLOW}\` failed on \`${BRANCH}\`.**"
+            echo ""
+            echo "- Commit: \`${COMMIT}\`"
+            echo "- Run: ${RUN_URL}"
+            echo ""
+            REPORT=_scan_report/merged.json
+            if [ "${DOWNLOADED:-false}" != "true" ] || [ ! -s "$REPORT" ]; then
+              echo "No scan report artifact was published by that run, so this alert"
+              echo "cannot name the finding. Open the run log above to locate it."
+            elif [ "$(jq 'length' "$REPORT" 2>/dev/null || echo 0)" = "0" ]; then
+              echo "The scan report contains no findings; the run failed for another reason."
+              echo "Open the run log above."
+            else
+              echo "**$(jq 'length' "$REPORT") finding(s).** Secret values are redacted;"
+              echo "the locations below are where to look."
+              echo ""
+              echo '```'
+              jq -r '.[] | "\(.File):\(.StartLine)  rule=\(.RuleID)\n    \(.Description)"' "$REPORT"
+              echo '```'
+            fi
+            echo ""
+            echo "This issue closes automatically when \`${WORKFLOW}\` next succeeds on \`${BRANCH}\`."
+          } > alert-body.md
+          echo "Built alert body:"
+          cat alert-body.md
+
+      - name: Open or update the alert issue
+        id: alert
+        if: inputs.conclusion == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          LABEL: ${{ inputs.issue-label }}
+          EXISTING: ${{ steps.existing.outputs.number }}
+          WORKFLOW: ${{ inputs.workflow-name }}
+          BRANCH: ${{ inputs.branch }}
+          COMMIT: ${{ inputs.commit }}
+          RUN_URL: ${{ inputs.run-url }}
+        run: |
+          set -uo pipefail
+          if [ -n "$EXISTING" ]; then
+            # Still red on a later commit: one issue, not one per push. That
+            # repetition is exactly what went unnoticed for 4.7 hours.
+            gh issue comment "$EXISTING" --repo "$REPO" --body \
+              "Still failing on \`${COMMIT}\` — ${RUN_URL}"
+            echo "url=$(gh issue view "$EXISTING" --repo "$REPO" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+            echo "Commented on existing alert #${EXISTING}."
+          else
+            URL=$(gh issue create --repo "$REPO" \
+              --title "${WORKFLOW} is failing on ${BRANCH}" \
+              --label "$LABEL" \
+              --body-file alert-body.md)
+            echo "url=${URL}" >> "$GITHUB_OUTPUT"
+            echo "Opened alert: ${URL}"
+          fi
+
+      - name: Close the alert on recovery
+        if: inputs.conclusion == 'success' && steps.existing.outputs.number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EXISTING: ${{ steps.existing.outputs.number }}
+          BRANCH: ${{ inputs.branch }}
+          COMMIT: ${{ inputs.commit }}
+          RUN_URL: ${{ inputs.run-url }}
+        run: |
+          set -uo pipefail
+          gh issue close "$EXISTING" --repo "$REPO" --reason completed --comment \
+            "Recovered on \`${COMMIT}\` (\`${BRANCH}\`) — ${RUN_URL}"
+          echo "Closed alert #${EXISTING}."
+
+      - name: Notify Slack
+        if: inputs.conclusion == 'failure'
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ inputs.workflow-name }}
+          BRANCH: ${{ inputs.branch }}
+          RUN_URL: ${{ inputs.run-url }}
+          ISSUE_URL: ${{ steps.alert.outputs.url }}
+        run: |
+          set -uo pipefail
+          # A missing webhook must never fail this job. An alerting path that
+          # dies silently is the defect this workflow exists to remove, so the
+          # unconfigured case is loud in the log instead.
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::notice::Slack alerting is not configured for ${REPO}."
+            echo "::notice::Add a SLACK_WEBHOOK_URL secret to enable it. The GitHub issue was still filed."
+            exit 0
+          fi
+          TEXT=":rotating_light: *${WORKFLOW}* is failing on \`${BRANCH}\` in \`${REPO}\`"
+          PAYLOAD=$(jq -n --arg text "$TEXT" --arg run "$RUN_URL" --arg issue "$ISSUE_URL" \
+            '{text: ($text + "\n<" + $run + "|run log>" + (if $issue == "" then "" else " · <" + $issue + "|tracking issue>" end))}')
+          # A fresh file per invocation: reusing a fixed path can surface a
+          # previous run's body when curl never writes one. And curl's own
+          # %{http_code} is already 000 on a connection failure, so no fallback
+          # echo -- appending one produced "HTTP 000000".
+          RESP=$(mktemp)
+          CODE=$(curl -sS -o "$RESP" -w '%{http_code}' \
+            -X POST -H 'Content-Type: application/json' \
+            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL" 2>/dev/null) || CODE="000"
+          if [ "$CODE" = "200" ]; then
+            echo "Slack notified."
+          elif [ "$CODE" = "000" ]; then
+            # Report, do not fail: the issue is already filed and is the durable record.
+            echo "::warning::Slack POST could not connect (no HTTP response)."
+          else
+            echo "::warning::Slack POST returned HTTP ${CODE}: $(head -c 200 "$RESP" 2>/dev/null)"
+          fi
+          rm -f "$RESP"
