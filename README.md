@@ -23,7 +23,8 @@ All dizhaky repos and automation should follow **[Karpathy's Four Rules](docs/KA
 ## Nightly automation
 
 | Template | Destination | Purpose |
-|----------|-------------|---------|\n| `nightly-maintenance.yml` | `.github/workflows/` | Per-repo nightly maintenance (06:30 UTC) |
+|----------|-------------|---------|
+| `nightly-maintenance.yml` | `.github/workflows/` | Per-repo nightly maintenance (06:30 UTC) |
 | `dependabot-auto-merge.yml` | `.github/workflows/` | Auto-merge safe github-actions Dependabot PRs |
 | `codeql.yml` | `.github/workflows/` | Weekly CodeQL (requires GHAS on private repos) |
 | `secret-scan-alert.yml` | `.github/workflows/` | Alert when `Secret Scan` goes red on the default branch |
