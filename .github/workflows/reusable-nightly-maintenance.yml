@@ -46,13 +46,51 @@ jobs:
           exit 1
 
       - name: Rolling secret scan (since 2 days ago)
+        id: scan
         shell: bash
         run: |
           set -euo pipefail
           since=$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)
           echo "## Secret scan (rolling 2-day window)" >> "$GITHUB_STEP_SUMMARY"
           echo "Since: ${since}" >> "$GITHUB_STEP_SUMMARY"
-          gitleaks detect --redact --exit-code 1 --verbose --log-opts="--since=${since}"
+          # --verbose already prints redacted findings to the job log; the report
+          # adds a machine-readable copy so the locations can also reach the step
+          # summary and an artifact. --redact still masks Match/Secret in it.
+          gitleaks detect --redact --exit-code 1 --verbose \
+            --report-format json --report-path gitleaks-report.json \
+            --log-opts="--since=${since}"
+
+      - name: Report finding locations
+        if: failure() && steps.scan.outcome == 'failure'
+        shell: bash
+        run: |
+          set -uo pipefail
+          REPORT=gitleaks-report.json
+          {
+            if [ ! -s "$REPORT" ]; then
+              echo "No gitleaks report was written - the scan failed before producing one."
+              echo "See the scan step log above for the underlying error."
+            elif [ "$(jq 'length' "$REPORT")" = "0" ]; then
+              echo "The report contains no findings; this job failed for another reason."
+            else
+              echo "**$(jq 'length' "$REPORT") finding(s).** Secret values are redacted;"
+              echo "the locations below are where to look."
+              echo ""
+              echo '```'
+              jq -r '.[] | "\(.File):\(.StartLine)  rule=\(.RuleID)  commit=\(if .Commit == "" then "working-tree" else .Commit[0:8] end)\n    \(.Description)"' "$REPORT"
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Artifact name is scoped to this job: a caller may run other gitleaks
+      # jobs, and upload-artifact v4+ rejects a duplicate name within one run.
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-report-nightly
+          path: gitleaks-report.json
+          if-no-files-found: ignore
 
   alert-report:
     runs-on: ubuntu-latest
