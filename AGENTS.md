@@ -57,3 +57,8 @@ Skip only for typo-only or comment-only edits.
 
 - `global-auto-merge.yml` reconciles active admin repositories every 15 minutes, including organization repositories and new repositories. It uses `AUTO_MERGE_PAT` or `GH_PAT`, runs trusted default-branch code only, and evaluates all authors.
 - It never bypasses branch protection: named required checks plus current green CI are mandatory; unprotected/no-required-check branches and explicit holds are reported as skipped. Details and read-only preview: `docs/global-auto-merge.md`.
+
+## Required secret-scan callers
+
+- Pin `.github/repo-templates/secret-scan.yml` to a reviewed full commit SHA of the reusable scanner. Update the pin deliberately after verification; do not use a moving branch reference for a required security check.
+- Include the `edited` pull-request activity alongside opened/synchronize/reopened so base-branch retargeting produces a fresh diff scan.
