@@ -50,3 +50,10 @@ Skip only for typo-only or comment-only edits.
 - Tests: `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
 
 - Template tests require pytest (`python3 -m pip install "pytest>=8,<10"`) for import-time isolation and disposable child-process probes. CI runs pytest on pushes and PRs.
+
+## Global auto-merge reconciliation
+
+- Default delivery policy (Dan, 2026-09-07): completed trusted harness work runs verification, merges to `main` through normal protected merging, cleans eligible merged remote branches, and verifies backend completion without asking Dan for code review or routine approval. Preserve CI, signing, conflict, security and review-resolution gates; resolve findings through the harness instead of bypassing them. Never discard dirty or unmerged local work.
+
+- `global-auto-merge.yml` reconciles active admin repositories every 15 minutes, including organization repositories and new repositories. It uses `AUTO_MERGE_PAT` or `GH_PAT`, runs trusted default-branch code only, and evaluates all authors.
+- It never bypasses branch protection: named required checks plus current green CI are mandatory; unprotected/no-required-check branches and explicit holds are reported as skipped. Details and read-only preview: `docs/global-auto-merge.md`.

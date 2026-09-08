@@ -1,0 +1,29 @@
+name: Global Auto-Merge Reconciler
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: global-auto-merge-reconciler
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Read trusted default-branch reconciler
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Reconcile active administrator repositories
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || secrets.GH_PAT }}
+        run: python3 scripts/global_auto_merge.py --apply
