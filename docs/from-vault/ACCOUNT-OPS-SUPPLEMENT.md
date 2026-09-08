@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: dizhaky/.github/.github/workflows/reusable-secret-scan.yml@main
+    uses: dizhaky/.github/.github/workflows/reusable-secret-scan.yml@acdcf4d79a54c426087e39d358fad38686648455
 ```
 
 Redeploy template to all repos after fixing `dizhaky/.github`.
