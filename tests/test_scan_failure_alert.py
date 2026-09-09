@@ -71,7 +71,7 @@ class ScanFailureAlertTest(unittest.TestCase):
 
     def test_alert_body_is_bounded(self):
         text = ALERT.read_text()
-        self.assertIn("cut -b 1-60000 > alert-body.md", text)
+        self.assertIn("head -c 60000 > alert-body.md", text)
 
     def run_fresh(self, *, this_id=11, created="2026-09-07T01:00:00Z", runs, api_fail=False):
         shell = _step_shell(ALERT.read_text(), "Reject stale runs")
