@@ -251,6 +251,7 @@ zero comments (DAN-2545, dotfiles #633 / kb-daemon #514).
 ```yaml
 permissions:
   contents: read
+  id-token: write
   issues: write
   pull-requests: write
 
