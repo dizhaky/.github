@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / ".github/workflows/post-merge-review-payload.yml"
 CAPTURE = ROOT / ".github/workflows/post-merge-review-capture.yml"
+HEAD_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
 class PostMergeReviewCaptureTest(unittest.TestCase):
@@ -55,6 +56,8 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         actor_id=100,
         issue_pages=None,
         create_fail=False,
+        head_sha=HEAD_SHA,
+        commit_id=HEAD_SHA,
     ):
         validation, capture = CAPTURE.read_text().split("\n  capture:", 1)
         shell = "\n".join(
@@ -84,6 +87,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                 "state": "COMMENTED",
                 "submitted_at": submitted,
                 "body": body.replace("marker", str(marker)),
+                "commit_id": commit_id,
             }
             (root / "event.json").write_text(
                 json.dumps(
@@ -92,6 +96,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                             "event": event,
                             "path": workflow_path,
                             "actor": {"id": actor_id},
+                            "head_sha": head_sha,
                             "pull_requests": [
                                 {"number": n} for n in associated_prs
                             ],
@@ -251,12 +256,20 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(mutations, [])
 
-    def test_missing_or_unrelated_run_pr_fails_visibly(self):
-        for prs in ((), (999,)):
-            with self.subTest(prs=prs):
-                result, mutations = self.run_capture(associated_prs=prs)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(mutations, [])
+    def test_late_review_with_empty_pr_associations_creates_issue(self):
+        result, mutations = self.run_capture(associated_prs=())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
+
+    def test_unrelated_run_pr_fails_visibly(self):
+        result, mutations = self.run_capture(associated_prs=(999,))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(mutations, [])
+
+    def test_head_sha_mismatch_fails_visibly(self):
+        result, mutations = self.run_capture(commit_id="b" * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(mutations, [])
 
     def test_wrong_source_event_workflow_or_actor_fails_visibly(self):
         for overrides in (

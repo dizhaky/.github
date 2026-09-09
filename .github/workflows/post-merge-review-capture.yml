@@ -49,16 +49,23 @@ jobs:
           [[ "$REVIEW_ID" =~ ^[0-9]+$ ]]
 
           # workflow_run metadata comes from GitHub, never from the artifact.
-          # Empty PR associations must fail visibly rather than trusting the payload.
+          # After merge (especially after head-branch deletion) pull_requests is
+          # often empty. Empty associations are allowed; a populated list must
+          # still include this PR. Bind identity via review commit_id == run head_sha.
           jq -e --argjson pr "$PR_NUMBER" '
             .workflow_run.event == "pull_request_review" and
             .workflow_run.path == ".github/workflows/post-merge-review-payload.yml" and
-            any(.workflow_run.pull_requests[]?; .number == $pr)
+            (.workflow_run.head_sha | test("^[0-9a-f]{40}$")) and
+            (
+              ((.workflow_run.pull_requests // []) | length) == 0 or
+              any(.workflow_run.pull_requests[]?; .number == $pr)
+            )
           ' "$GITHUB_EVENT_PATH" > /dev/null
           REVIEW_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID")
           ACTOR_ID=$(jq -er '.workflow_run.actor.id' "$GITHUB_EVENT_PATH")
-          jq -e --argjson review "$REVIEW_ID" --argjson actor "$ACTOR_ID" '
-            .id == $review and .user.id == $actor
+          HEAD_SHA=$(jq -er '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")
+          jq -e --argjson review "$REVIEW_ID" --argjson actor "$ACTOR_ID" --arg head "$HEAD_SHA" '
+            .id == $review and .user.id == $actor and .commit_id == $head
           ' <<<"$REVIEW_JSON" > /dev/null
           printf 'pr_number=%s\nreview_id=%s\n' "$PR_NUMBER" "$REVIEW_ID" >> "$GITHUB_OUTPUT"
 

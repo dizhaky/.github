@@ -95,9 +95,42 @@ jobs:
             echo "No existing open alert for this workflow/branch."
           fi
 
+      - name: Reject stale runs
+        id: fresh
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run-id }}
+          WORKFLOW: ${{ inputs.workflow-name }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          THIS=$(gh api "repos/$REPO/actions/runs/$RUN_ID")
+          CREATED=$(jq -er '.created_at' <<<"$THIS")
+          THIS_ID=$(jq -er '.id' <<<"$THIS")
+          THIS_NAME=$(jq -er '.name' <<<"$THIS")
+          RUNS=$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" --limit 50 --json databaseId,createdAt)
+          # Rehearsal/dispatch uses this workflow's own run id, which is not a
+          # scan run. Allow it rather than treating it as stale.
+          if ! jq -e --argjson id "$THIS_ID" 'any(.[]; .databaseId == $id)' <<<"$RUNS" >/dev/null; then
+            echo "Run ${THIS_ID} (${THIS_NAME}) is not a '${WORKFLOW}' run on ${BRANCH}; treating as current (rehearsal)."
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          NEWER=$(jq -r --argjson id "$THIS_ID" --arg created "$CREATED" \
+            '[.[] | select(.databaseId != $id and .createdAt > $created)] | length' <<<"$RUNS")
+          if [ "$NEWER" -gt 0 ]; then
+            echo "Skipping: ${NEWER} newer '${WORKFLOW}' run(s) exist on ${BRANCH}."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Run ${THIS_ID} is the newest '${WORKFLOW}' run on ${BRANCH}."
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
       - name: Download the scan report, if one was published
         id: report
-        if: inputs.conclusion == 'failure' && inputs.artifact-name != ''
+        if: inputs.conclusion == 'failure' && inputs.artifact-name != '' && steps.fresh.outputs.current == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -139,7 +172,7 @@ jobs:
 
       - name: Build the alert body
         id: body
-        if: inputs.conclusion == 'failure'
+        if: inputs.conclusion == 'failure' && steps.fresh.outputs.current == 'true'
         shell: bash
         env:
           MARKER: ${{ steps.existing.outputs.marker }}
@@ -181,7 +214,7 @@ jobs:
 
       - name: Open or update the alert issue
         id: alert
-        if: inputs.conclusion == 'failure'
+        if: inputs.conclusion == 'failure' && steps.fresh.outputs.current == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -211,7 +244,7 @@ jobs:
           fi
 
       - name: Close the alert on recovery
-        if: inputs.conclusion == 'success' && steps.existing.outputs.number != ''
+        if: inputs.conclusion == 'success' && steps.existing.outputs.number != '' && steps.fresh.outputs.current == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -227,7 +260,7 @@ jobs:
           echo "Closed alert #${EXISTING}."
 
       - name: Notify Slack
-        if: inputs.conclusion == 'failure'
+        if: inputs.conclusion == 'failure' && steps.fresh.outputs.current == 'true'
         shell: bash
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

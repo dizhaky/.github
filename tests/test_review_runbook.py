@@ -18,6 +18,7 @@ class ReviewRunbookTest(unittest.TestCase):
         section = runbook.split("### Posting reviews", 1)[1].split("Canonical recipe", 1)[0]
         self.assertIn("pull-requests: write", section)
         self.assertIn("issues: write", section)
+        self.assertIn("id-token: write", section)
         self.assertIn("BASE_SHA", section)
         self.assertIn("AGENTS.md", section)
         self.assertIn("CLAUDE.md", section)
