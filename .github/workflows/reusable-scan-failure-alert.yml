@@ -222,7 +222,9 @@ jobs:
             fi
             echo ""
             echo "This issue closes automatically when \`${WORKFLOW}\` next succeeds on \`${BRANCH}\`."
-          } | head -c 60000 > alert-body.md
+          } > alert-body-raw.md
+          head -c 60000 alert-body-raw.md > alert-body.md
+          rm -f alert-body-raw.md
           echo "Built alert body:"
           cat alert-body.md
 

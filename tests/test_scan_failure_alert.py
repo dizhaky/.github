@@ -71,7 +71,48 @@ class ScanFailureAlertTest(unittest.TestCase):
 
     def test_alert_body_is_bounded(self):
         text = ALERT.read_text()
-        self.assertIn("head -c 60000 > alert-body.md", text)
+        self.assertIn("head -c 60000 alert-body-raw.md > alert-body.md", text)
+        self.assertIn("rm -f alert-body-raw.md", text)
+
+    def test_alert_body_render_large_report_no_sigpipe(self):
+        shell = _step_shell(ALERT.read_text(), "Build the alert body")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_dir = root / "_scan_report"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_file = report_dir / "merged.json"
+            # Create a report with enough findings to exceed 60KB
+            findings = [
+                {
+                    "File": f"src/very/long/path/to/component/file_{i}.py",
+                    "StartLine": i * 10,
+                    "RuleID": "generic-api-key-exposure",
+                    "Description": f"Detected potential secret token in configuration block number {i} " * 2,
+                }
+                for i in range(1, 600)
+            ]
+            report_file.write_text(json.dumps(findings))
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", shell],
+                cwd=root,
+                env={
+                    "PATH": os.environ["PATH"],
+                    "MARKER": "<!-- marker -->",
+                    "DOWNLOADED": "true",
+                    "WORKFLOW": "Secret Scan",
+                    "BRANCH": "main",
+                    "RUN_URL": "https://github.com/dizhaky/.github/actions/runs/123",
+                    "COMMIT": "abc1234",
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            body_file = root / "alert-body.md"
+            self.assertTrue(body_file.exists())
+            self.assertLessEqual(body_file.stat().st_size, 60000)
+            self.assertFalse((root / "alert-body-raw.md").exists())
 
     def run_fresh(self, *, this_id=11, created="2026-09-07T01:00:00Z", runs, api_fail=False):
         shell = _step_shell(ALERT.read_text(), "Reject stale runs")
