@@ -266,8 +266,13 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(mutations, [])
 
-    def test_head_sha_mismatch_fails_visibly(self):
+    def test_late_review_on_prior_commit_sha_succeeds(self):
         result, mutations = self.run_capture(commit_id="b" * 40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
+
+    def test_invalid_commit_sha_fails_visibly(self):
+        result, mutations = self.run_capture(commit_id="not-a-valid-sha")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(mutations, [])
 

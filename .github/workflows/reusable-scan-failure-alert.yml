@@ -62,6 +62,9 @@ permissions:
 
 jobs:
   alert:
+    concurrency:
+      group: scan-alert-${{ inputs.workflow-name }}-${{ inputs.branch }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Find any existing open alert
@@ -110,7 +113,8 @@ jobs:
           CREATED=$(jq -er '.created_at' <<<"$THIS")
           THIS_ID=$(jq -er '.id' <<<"$THIS")
           THIS_NAME=$(jq -er '.name' <<<"$THIS")
-          RUNS=$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" --limit 50 --json databaseId,createdAt)
+          THIS_ATTEMPT=$(jq -r '.run_attempt // 1' <<<"$THIS")
+          RUNS=$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" --event push --limit 50 --json databaseId,createdAt,status,conclusion,number,attempt)
           # Rehearsal/dispatch uses this workflow's own run id, which is not a
           # scan run. Allow it rather than treating it as stale.
           if ! jq -e --argjson id "$THIS_ID" 'any(.[]; .databaseId == $id)' <<<"$RUNS" >/dev/null; then
@@ -118,14 +122,24 @@ jobs:
             echo "current=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          NEWER=$(jq -r --argjson id "$THIS_ID" --arg created "$CREATED" \
-            '[.[] | select(.databaseId != $id and .createdAt > $created)] | length' <<<"$RUNS")
+          NEWER=$(jq -r --argjson id "$THIS_ID" --arg created "$CREATED" --argjson attempt "$THIS_ATTEMPT" '
+            [
+              .[] | select(
+                (.status // "completed") == "completed" and
+                ((.conclusion // "success") == "success" or (.conclusion // "") == "failure") and
+                (
+                  (.databaseId != $id and (.createdAt > $created or (.createdAt == $created and .databaseId > $id))) or
+                  (.databaseId == $id and ((.attempt // 1) > $attempt))
+                )
+              )
+            ] | length
+          ' <<<"$RUNS")
           if [ "$NEWER" -gt 0 ]; then
-            echo "Skipping: ${NEWER} newer '${WORKFLOW}' run(s) exist on ${BRANCH}."
+            echo "Skipping: ${NEWER} newer completed '${WORKFLOW}' run(s) exist on ${BRANCH}."
             echo "current=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "Run ${THIS_ID} is the newest '${WORKFLOW}' run on ${BRANCH}."
+          echo "Run ${THIS_ID} is the newest completed '${WORKFLOW}' run on ${BRANCH}."
           echo "current=true" >> "$GITHUB_OUTPUT"
 
       - name: Download the scan report, if one was published
@@ -208,7 +222,7 @@ jobs:
             fi
             echo ""
             echo "This issue closes automatically when \`${WORKFLOW}\` next succeeds on \`${BRANCH}\`."
-          } > alert-body.md
+          } | cut -b 1-60000 > alert-body.md
           echo "Built alert body:"
           cat alert-body.md
 

@@ -58,6 +58,21 @@ class ScanFailureAlertTest(unittest.TestCase):
             text,
         )
 
+    def test_job_concurrency_serializes_by_workflow_and_branch(self):
+        text = ALERT.read_text()
+        self.assertIn("concurrency:", text)
+        self.assertIn("group: scan-alert-${{ inputs.workflow-name }}-${{ inputs.branch }}", text)
+        self.assertIn("cancel-in-progress: false", text)
+
+    def test_freshness_queries_push_events_and_run_identity(self):
+        text = ALERT.read_text()
+        self.assertIn("--event push", text)
+        self.assertIn("databaseId,createdAt,status,conclusion,number,attempt", text)
+
+    def test_alert_body_is_bounded(self):
+        text = ALERT.read_text()
+        self.assertIn("cut -b 1-60000 > alert-body.md", text)
+
     def run_fresh(self, *, this_id=11, created="2026-09-07T01:00:00Z", runs, api_fail=False):
         shell = _step_shell(ALERT.read_text(), "Reject stale runs")
         self.assertNotIn("${{", shell)
@@ -149,10 +164,36 @@ class ScanFailureAlertTest(unittest.TestCase):
         self.assertEqual(outputs.get("current"), "true")
         self.assertIn("rehearsal", result.stdout)
 
-    def test_api_failure_is_visible(self):
-        result, outputs = self.run_fresh(runs=[], api_fail=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotEqual(outputs.get("current"), "true")
+    def test_in_progress_newer_run_does_not_suppress_failure(self):
+        result, outputs = self.run_fresh(
+            runs=[
+                {"databaseId": 12, "createdAt": "2026-09-07T02:00:00Z", "status": "in_progress", "conclusion": None},
+                {"databaseId": 11, "createdAt": "2026-09-07T01:00:00Z", "status": "completed", "conclusion": "failure"},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs.get("current"), "true")
+
+    def test_same_timestamp_higher_database_id_is_rejected(self):
+        result, outputs = self.run_fresh(
+            runs=[
+                {"databaseId": 12, "createdAt": "2026-09-07T01:00:00Z", "status": "completed", "conclusion": "success"},
+                {"databaseId": 11, "createdAt": "2026-09-07T01:00:00Z", "status": "completed", "conclusion": "failure"},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs.get("current"), "false")
+        self.assertIn("Skipping", result.stdout)
+
+    def test_higher_attempt_of_same_run_is_rejected(self):
+        result, outputs = self.run_fresh(
+            runs=[
+                {"databaseId": 11, "createdAt": "2026-09-07T01:00:00Z", "status": "completed", "conclusion": "success", "attempt": 2},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs.get("current"), "false")
+        self.assertIn("Skipping", result.stdout)
 
 
 if __name__ == "__main__":
