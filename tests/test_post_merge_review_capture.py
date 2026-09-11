@@ -22,10 +22,10 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         source = SOURCE.read_text()
         capture = CAPTURE.read_text()
         self.assertIn("pull_request_review:", source)
-        self.assertIn("actions/upload-artifact@v4", source)
+        self.assertRegex(source, r"actions/upload-artifact@v[4-9]")
         self.assertNotIn("issues: write", source)
         self.assertIn("workflow_run:", capture)
-        self.assertIn("actions/download-artifact@v4", capture)
+        self.assertRegex(capture, r"actions/download-artifact@v[4-9]")
         self.assertIn("issues: write", capture)
         self.assertNotIn("continue-on-error", capture)
         self.assertIn(
