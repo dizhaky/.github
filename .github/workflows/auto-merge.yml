@@ -21,7 +21,11 @@ on:
     types:
       - completed
   schedule:
-    - cron: '*/15 * * * *'
+    # Half-hourly (was */15). Fleet AUTO_MERGE_PAT is dizhaky (user
+    # 213320850); ~18 repos on a shared budget made quarter-hour full
+    # sweeps add up. workflow_run / pull_request still cover the hot
+    # path; this cron is only the backstop for missed events. DAN-3334.
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -60,62 +64,268 @@ jobs:
           INPUT_PR: ${{ github.event.inputs.pull_request_number }}
         run: |
           set -euo pipefail
+
+          # AUTO_MERGE_PAT authenticates as dizhaky (user ID 213320850).
+          # REST and GraphQL budgets for that user are shared with Claude
+          # Code / MCP / gh CLI — not a separate bot quota. DAN-3334.
+
           retry_with_backoff() {
-            local max_attempts=3; local timeout=1; local attempt=1; local exitcode=0
+            local max_attempts=3
+            local timeout=1
+            local attempt=1
+            local exitcode=0
+            local errfile
+            errfile=$(mktemp)
             while [ "$attempt" -le "$max_attempts" ]; do
-              if "$@"; then return 0; else exitcode=$?; fi
-              if [ "$attempt" -lt "$max_attempts" ]; then echo "  attempt $attempt failed; retrying in ${timeout}s..."; sleep "$timeout"; timeout=$((timeout * 2)); fi
+              if "$@" 2>"$errfile"; then
+                cat "$errfile" >&2 || true
+                rm -f "$errfile"
+                return 0
+              else
+                exitcode=$?
+              fi
+              cat "$errfile" >&2 || true
+              # Retrying a hard rate-limit burns the remaining budget three
+              # times per call site (observed 2026-09-05).
+              if grep -qiE 'rate limit|API rate limit already exceeded' "$errfile"; then
+                echo "  rate limit hit — not retrying (DAN-3334)" >&2
+                rm -f "$errfile"
+                return "$exitcode"
+              fi
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                # stderr, not stdout: callers capture this helper in $( ).
+                echo "  attempt $attempt failed; retrying in ${timeout}s..." >&2
+                sleep "$timeout"
+                timeout=$((timeout * 2))
+              fi
               attempt=$((attempt + 1))
             done
+            rm -f "$errfile"
             return "$exitcode"
           }
+
+          rate_limit_preflight() {
+            local remaining
+            remaining=$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo "")
+            if [ -z "$remaining" ]; then
+              echo "  ! could not read rate_limit; continuing"
+              return 0
+            fi
+            echo "  REST core remaining=$remaining"
+            if [ "$remaining" -lt 100 ]; then
+              echo "  ✗ REST core remaining ($remaining) below 100 — aborting sweep"
+              return 1
+            fi
+            return 0
+          }
+
+          # List-payload filter: author + not-draft so cron/dispatch-all
+          # skips Dependabot/draft/other-author rows without per-PR fan-out.
+          list_eligible_pr_numbers() {
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '[.[] | select(.draft == false and .user.login == "dizhaky") | .number] | join(" ")'
+          }
+
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            # Jitter across the ~18-repo fleet so every auto-merge.yml does
+            # not hit api.github.com on the same :00/:30 wall-clock second.
+            JITTER=$((RANDOM % 90))
+            echo "Schedule jitter: sleeping ${JITTER}s"
+            sleep "$JITTER"
+          fi
+
+          rate_limit_preflight || exit 1
+
           PR_NUMBERS=""
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ -n "$INPUT_PR" ]; then
-              if ! echo "$INPUT_PR" | grep -qE '^[0-9]+( [0-9]+)*$'; then echo "Error: PR numbers must be numeric and space-separated."; exit 1; fi
+              if ! echo "$INPUT_PR" | grep -qE '^[0-9]+( [0-9]+)*$'; then
+                echo "Error: PR numbers must be numeric and space-separated."
+                exit 1
+              fi
               PR_NUMBERS="$INPUT_PR"
-            else PR_NUMBERS=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' | tr '\n' ' '); fi
-          elif [ "$EVENT_NAME" = "pull_request" ]; then PR_NUMBERS="$EVENT_PR_NUMBER"
-          elif [ "$EVENT_NAME" = "schedule" ]; then PR_NUMBERS=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' | tr '\n' ' ')
+            else
+              PR_NUMBERS=$(list_eligible_pr_numbers)
+            fi
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_NUMBERS="$EVENT_PR_NUMBER"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            PR_NUMBERS=$(list_eligible_pr_numbers)
           elif [ "$EVENT_NAME" = "workflow_run" ]; then
-            if [ -n "$HEAD_SHA" ]; then PR_NUMBERS=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[] | select(.state == "open") | .number' 2>/dev/null | tr '\n' ' ' || true); fi
-            if [ -z "${PR_NUMBERS// /}" ] && [ -n "$HEAD_BRANCH" ]; then PR_NUMBERS=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --state open --json number --jq '.[].number' 2>/dev/null | tr '\n' ' ' || true); fi
+            if [ -n "$HEAD_SHA" ]; then
+              PR_NUMBERS=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                --jq '.[] | select(.state == "open") | .number' 2>/dev/null | tr '\n' ' ' || true)
+            fi
+            if [ -z "${PR_NUMBERS// /}" ] && [ -n "$HEAD_BRANCH" ]; then
+              # -f under --method GET so gh URL-encodes the value.
+              PR_NUMBERS=$(gh api --method GET "repos/$REPO/pulls" \
+                -f state=open \
+                -f "head=${REPO%%/*}:$HEAD_BRANCH" \
+                --jq '.[].number' 2>/dev/null | tr '\n' ' ' || true)
+            fi
           fi
-          if [ -z "${PR_NUMBERS// /}" ]; then echo "No open PRs to evaluate."; exit 0; fi
+
+          if [ -z "${PR_NUMBERS// /}" ]; then
+            echo "No open PRs to evaluate."
+            exit 0
+          fi
           echo "Evaluating PR(s): $PR_NUMBERS"
+
+          MERGE_FAILED=0
+          UNREADABLE=0
+
           for PR_NUMBER in $PR_NUMBERS; do
             echo "=== Evaluating PR #$PR_NUMBER ==="
-            PR_JSON=$(retry_with_backoff gh pr view "$PR_NUMBER" --repo "$REPO" --json number,state,isDraft,headRefOid,headRepositoryOwner,author,labels,reviewDecision,mergeable) || { echo "  ✗ could not read PR #$PR_NUMBER after retries"; continue; }
+
+            PR_JSON=$(retry_with_backoff gh api "repos/$REPO/pulls/$PR_NUMBER") || {
+              echo "  ✗ could not read PR #$PR_NUMBER after retries"
+              UNREADABLE=$((UNREADABLE + 1))
+              continue
+            }
+
+            # REST field names/values (not GraphQL): state lowercase, draft
+            # boolean, user/head.* renamed, mergeable tri-state boolean.
             STATE=$(jq -r '.state' <<<"$PR_JSON")
-            IS_DRAFT=$(jq -r '.isDraft' <<<"$PR_JSON")
-            AUTHOR=$(jq -r '.author.login // empty' <<<"$PR_JSON")
-            HEAD_OWNER=$(jq -r '.headRepositoryOwner.login // empty' <<<"$PR_JSON")
+            IS_DRAFT=$(jq -r '.draft' <<<"$PR_JSON")
+            AUTHOR=$(jq -r '.user.login // empty' <<<"$PR_JSON")
+            HEAD_OWNER=$(jq -r '.head.repo.owner.login // empty' <<<"$PR_JSON")
+            HEAD_REF=$(jq -r '.head.ref // empty' <<<"$PR_JSON")
             REPO_OWNER=$(echo "$REPO" | cut -d'/' -f1)
-            REVIEW_DECISION=$(jq -r '.reviewDecision // empty' <<<"$PR_JSON")
-            MERGEABLE=$(jq -r '.mergeable // empty' <<<"$PR_JSON")
-            PR_SHA=$(jq -r '.headRefOid' <<<"$PR_JSON")
-            HAS_DO_NOT_MERGE=$(jq -r '[.labels[].name] | index("do-not-merge") // empty' <<<"$PR_JSON")
-            if [ "$STATE" != "OPEN" ]; then echo "  ✗ PR state is $STATE (not OPEN) — skipping"; continue; fi
-            if [ "$IS_DRAFT" = "true" ]; then echo "  ✗ PR is draft — skipping"; continue; fi
-            if [ "$AUTHOR" != "dizhaky" ]; then echo "  ✗ PR author is '$AUTHOR' (required: dizhaky) — skipping"; continue; fi
-            if [ -n "$HEAD_OWNER" ] && [ "$HEAD_OWNER" != "$REPO_OWNER" ]; then echo "  ✗ PR is from fork ($HEAD_OWNER != $REPO_OWNER) — skipping"; continue; fi
-            if [ -n "$HAS_DO_NOT_MERGE" ]; then echo "  ✗ PR has do-not-merge label — skipping"; continue; fi
-            if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ]; then echo "  ✗ PR has CHANGES_REQUESTED review — skipping"; continue; fi
-            if [ "$MERGEABLE" = "CONFLICTING" ]; then echo "  ✗ PR has merge conflicts (CONFLICTING) — skipping"; continue; fi
-            CHECK_RUNS_JSON=$(gh api "repos/$REPO/commits/$PR_SHA/check-runs?filter=latest" --paginate) || { echo "  ✗ could not fetch check-runs for $PR_SHA"; continue; }
-            NON_AM_CHECKS=$(jq '[.check_runs[] | select(.name | test("auto-merge"; "i") | not)]' <<<"$CHECK_RUNS_JSON")
+            MERGEABLE=$(jq -r '.mergeable' <<<"$PR_JSON")
+            PR_SHA=$(jq -r '.head.sha' <<<"$PR_JSON")
+            PR_TITLE=$(jq -r '.title // empty' <<<"$PR_JSON")
+            HAS_DO_NOT_MERGE=$(jq -r 'any((.labels // [])[]; .name=="do-not-merge")' <<<"$PR_JSON")
+
+            if [ "$STATE" != "open" ]; then
+              echo "  ✗ PR state is $STATE (not open) — skipping"
+              continue
+            fi
+            if [ "$IS_DRAFT" = "true" ]; then
+              echo "  ✗ PR is draft — skipping"
+              continue
+            fi
+            if [ "$AUTHOR" != "dizhaky" ]; then
+              echo "  ✗ PR author is '$AUTHOR' (required: dizhaky) — skipping"
+              continue
+            fi
+            if [ -n "$HEAD_OWNER" ] && [ "$HEAD_OWNER" != "$REPO_OWNER" ]; then
+              echo "  ✗ PR is from fork ($HEAD_OWNER != $REPO_OWNER) — skipping"
+              continue
+            fi
+            if [ "$HAS_DO_NOT_MERGE" = "true" ]; then
+              echo "  ✗ PR has do-not-merge label — skipping"
+              continue
+            fi
+            # Fail closed on null as well as false (not-yet-computed).
+            if [ "$MERGEABLE" != "true" ]; then
+              echo "  ✗ PR not confirmed mergeable (mergeable=$MERGEABLE) — skipping"
+              continue
+            fi
+
+            # Reviews only after cheap author/draft/fork gates (DAN-3334).
+            REVIEWS_JSON=$(retry_with_backoff gh api \
+              "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" --paginate) || {
+              echo "  ✗ could not fetch reviews for PR #$PR_NUMBER"
+              UNREADABLE=$((UNREADABLE + 1))
+              continue
+            }
+            CHANGES_REQUESTED=$(jq -s '[.[][]
+              | select(.state=="APPROVED" or .state=="CHANGES_REQUESTED" or .state=="DISMISSED")]
+              | group_by(.user.login) | map(sort_by(.submitted_at, .id) | last)
+              | any(.[]; .state=="CHANGES_REQUESTED")' <<<"$REVIEWS_JSON") || {
+              echo "  ✗ could not evaluate reviews for PR #$PR_NUMBER"
+              UNREADABLE=$((UNREADABLE + 1))
+              continue
+            }
+            if [ "$CHANGES_REQUESTED" = "true" ]; then
+              echo "  ✗ PR has CHANGES_REQUESTED review — skipping"
+              continue
+            fi
+
+            CHECK_RUNS_JSON=$(retry_with_backoff gh api \
+              "repos/$REPO/commits/$PR_SHA/check-runs?filter=latest" --paginate) || {
+              echo "  ✗ could not fetch check-runs for $PR_SHA"
+              UNREADABLE=$((UNREADABLE + 1))
+              continue
+            }
+            NON_AM_CHECKS=$(jq -s \
+              '[.[].check_runs[]? | select(.name | test("auto-merge"; "i") | not)]' \
+              <<<"$CHECK_RUNS_JSON")
             TOTAL_CHECKS=$(jq 'length' <<<"$NON_AM_CHECKS")
-            if [ "$TOTAL_CHECKS" -eq 0 ]; then echo "  ✗ No CI check runs found on $PR_SHA yet — skipping"; continue; fi
+            if [ "$TOTAL_CHECKS" -eq 0 ]; then
+              echo "  ✗ No CI check runs found on $PR_SHA yet — skipping"
+              continue
+            fi
             INCOMPLETE_COUNT=$(jq '[.[] | select(.status != "completed")] | length' <<<"$NON_AM_CHECKS")
-            if [ "$INCOMPLETE_COUNT" -gt 0 ]; then echo "  ✗ Check runs still pending/in-progress ($INCOMPLETE_COUNT of $TOTAL_CHECKS) — skipping"; continue; fi
-            FAILED_COUNT=$(jq '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length' <<<"$NON_AM_CHECKS")
-            if [ "$FAILED_COUNT" -gt 0 ]; then echo "  ✗ Check runs failed/non-green ($FAILED_COUNT of $TOTAL_CHECKS) — skipping"; continue; fi
-            STATUS_JSON=$(gh api "repos/$REPO/commits/$PR_SHA/status") || { echo "  ✗ could not fetch commit status for $PR_SHA"; continue; }
+            if [ "$INCOMPLETE_COUNT" -gt 0 ]; then
+              echo "  ✗ Check runs still pending/in-progress ($INCOMPLETE_COUNT of $TOTAL_CHECKS) — skipping"
+              continue
+            fi
+            FAILED_COUNT=$(jq \
+              '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length' \
+              <<<"$NON_AM_CHECKS")
+            if [ "$FAILED_COUNT" -gt 0 ]; then
+              echo "  ✗ Check runs failed/non-green ($FAILED_COUNT of $TOTAL_CHECKS) — skipping"
+              continue
+            fi
+
+            STATUS_JSON=$(retry_with_backoff gh api "repos/$REPO/commits/$PR_SHA/status") || {
+              echo "  ✗ could not fetch commit status for $PR_SHA"
+              UNREADABLE=$((UNREADABLE + 1))
+              continue
+            }
             STATUS_STATE=$(jq -r '.state' <<<"$STATUS_JSON")
             STATUS_COUNT=$(jq -r '.total_count' <<<"$STATUS_JSON")
-            if [ "$STATUS_COUNT" -gt 0 ] && [ "$STATUS_STATE" != "success" ]; then echo "  ✗ Combined commit status is '$STATUS_STATE' (not success) — skipping"; continue; fi
-            CURRENT_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q .headRefOid)
-            if [ "$CURRENT_HEAD" != "$PR_SHA" ]; then echo "  ✗ PR head moved during checks ($PR_SHA -> $CURRENT_HEAD) — skipping"; continue; fi
+            if [ "$STATUS_COUNT" -gt 0 ] && [ "$STATUS_STATE" != "success" ]; then
+              echo "  ✗ Combined commit status is '$STATUS_STATE' (not success) — skipping"
+              continue
+            fi
+
+            CURRENT_HEAD=$(retry_with_backoff gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha') || {
+              echo "  ✗ could not re-read head SHA for PR #$PR_NUMBER"
+              UNREADABLE=$((UNREADABLE + 1))
+              continue
+            }
+            if [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
+              echo "  ✗ PR head moved during checks ($PR_SHA -> $CURRENT_HEAD) — skipping"
+              continue
+            fi
+
+            # REST merge (DAN-3334). Replaces the GraphQL CLI merge helper
+            # (lookup + mutation + schema probes × retries on the shared
+            # dizhaky budget).
             echo "  ✓ All gates passed for PR #$PR_NUMBER @ $PR_SHA — merging (squash + delete branch)"
-            if retry_with_backoff gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "$PR_SHA" --delete-branch; then echo "  ✓ Successfully merged PR #$PR_NUMBER"; else echo "  ✗ Merge failed for PR #$PR_NUMBER"; fi
+            MERGE_PAYLOAD=$(jq -n \
+              --arg sha "$PR_SHA" \
+              --arg title "$PR_TITLE" \
+              '{merge_method:"squash", sha:$sha, commit_title:$title}')
+            MERGE_FILE=$(mktemp)
+            printf '%s' "$MERGE_PAYLOAD" >"$MERGE_FILE"
+            if retry_with_backoff gh api --method PUT \
+              "repos/$REPO/pulls/$PR_NUMBER/merge" --input "$MERGE_FILE" >/dev/null; then
+              rm -f "$MERGE_FILE"
+              echo "  ✓ Successfully merged PR #$PR_NUMBER"
+              if [ -n "$HEAD_REF" ]; then
+                if ! retry_with_backoff gh api --method DELETE \
+                  "repos/$REPO/git/refs/heads/$HEAD_REF" >/dev/null 2>&1; then
+                  echo "  ! could not delete branch $HEAD_REF after merge (non-fatal)"
+                fi
+              fi
+            else
+              rm -f "$MERGE_FILE"
+              echo "  ✗ Merge failed for PR #$PR_NUMBER"
+              MERGE_FAILED=$((MERGE_FAILED + 1))
+            fi
           done
+
+          FAILED=0
+          if [ "$UNREADABLE" -gt 0 ]; then
+            echo "Could not fully evaluate $UNREADABLE PR(s): an API read failed."
+            echo "Usual cause: rate limit exhausted; grep this log for 'rate limit'."
+            FAILED=1
+          fi
+          if [ "$MERGE_FAILED" -gt 0 ]; then
+            echo "Merge call failed for $MERGE_FAILED PR(s) that passed every gate."
+            FAILED=1
+          fi
+          exit "$FAILED"
