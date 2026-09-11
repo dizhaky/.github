@@ -1,6 +1,6 @@
 # Runbooks — dizhaky GitHub account
 
-**Last updated:** 2026-05-23
+**Last updated:** 2026-09-11
 
 > **Also see:** Obsidian [[Projects/Tech/github-ops/RUNBOOKS|GitHub Ops Runbooks]] and [[Projects/Tech/github-ops/DEPRECATED-REGISTRY|Deprecated Registry]] (`~/Projects/obsidian-vault/Projects/Tech/github-ops/`).
 
@@ -315,3 +315,57 @@ Account health check cancels queued runs older than **45 minutes** (2700s). Thes
 - `Nightly Maintenance`
 
 Tune via `PROTECTED_WORKFLOWS` and `QUEUED_STALE_SECONDS` in `.github/workflows/nightly-health-check.yml`.
+
+---
+
+## Secret Scan failure alert
+
+Opens a **deduplicated** GitHub issue when `Secret Scan` goes red on the **default branch**, and closes it on recovery. Optional Slack is fail-soft.
+
+### Templates
+
+| File | Role |
+|------|------|
+| `.github/repo-templates/secret-scan.yml` | Consumer caller → SHA-pinned `reusable-secret-scan.yml` |
+| `.github/repo-templates/secret-scan-alert.yml` | Consumer `workflow_run` caller → `reusable-scan-failure-alert.yml@main` |
+| `.github/workflows/reusable-scan-failure-alert.yml` | Shared alert logic (issue + optional Slack) |
+
+`workflow_run` must live in the consumer repo (it only fires from the default-branch copy of that file).
+
+### Adoption (this token’s reach)
+
+| Repo | Secret Scan | Alert | Notes |
+|------|-------------|-------|-------|
+| `dizhaky/Agent-Reach` | live (`#4`) | live | Success-path `workflow_run` verified 2026-09-11 |
+| `dizhaky/agentmemory` | live (`#19`) | live | Success-path `workflow_run` verified 2026-09-11 |
+| `obsidian-vault`, `mcp-servers`, … | — | — | Out of current cloud-agent token scope |
+
+Copy both templates into a consumer, or open a PR mirroring Agent-Reach `#4`.
+
+### Optional Slack
+
+```bash
+gh secret set SLACK_WEBHOOK_URL -R OWNER/REPO --body "$SLACK_WEBHOOK_URL"
+```
+
+Unset → issue path still runs; Slack step logs a notice and exits 0.
+
+### Rehearse failure / recovery (no red `main`)
+
+Bot tokens often lack `actions:write` for `workflow_dispatch`. From a human session:
+
+```bash
+# Open / refresh the alert issue without failing main
+gh workflow run "Secret Scan Alert" -R OWNER/REPO -f conclusion=failure
+
+# Close it again (recovery path)
+gh workflow run "Secret Scan Alert" -R OWNER/REPO -f conclusion=success
+```
+
+Or: Actions → **Secret Scan Alert** → Run workflow → choose `failure` / `success`.
+
+### Live checks after adopt
+
+1. Merge the adopt PR → confirm **Secret Scan** is green on `main`.
+2. Confirm **Secret Scan Alert** ran on `workflow_run` (success conclusion). Freshness logic may log `Skipping: N newer completed…` when several scan runs finish close together — that is expected and still a green job.
+3. Run the failure rehearsal above once per repo to prove issue open/dedup; then success to close.
