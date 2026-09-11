@@ -29,7 +29,9 @@ All dizhaky repos and automation should follow **[Karpathy's Four Rules](docs/KA
 | `codeql.yml` | `.github/workflows/` | Weekly CodeQL (requires GHAS on private repos) |
 | `secret-scan-alert.yml` | `.github/workflows/` | Alert when `Secret Scan` goes red on the default branch |
 
-**Secrets:** Add `GH_PAT` (classic, `repo` scope) to this repo for cross-repo account health checks. Per-repo workflows use `GITHUB_TOKEN`. `secret-scan-alert.yml` optionally uses `SLACK_WEBHOOK_URL`; without it the GitHub issue is still filed and the Slack step skips rather than failing. See **[docs/RUNBOOKS.md](docs/RUNBOOKS.md)** for GH_PAT, GHAS/CodeQL, and optional Claude review setup.
+**Secrets:** Add `GH_PAT` (classic, `repo` scope) to this repo for cross-repo account health checks. Per-repo workflows use `GITHUB_TOKEN`. `secret-scan-alert.yml` optionally uses `SLACK_WEBHOOK_URL`; without it the GitHub issue is still filed and the Slack step skips rather than failing. See **[docs/RUNBOOKS.md](docs/RUNBOOKS.md)** for GH_PAT, GHAS/CodeQL, optional Claude review, and the **Secret Scan failure alert** adopt/rehearse runbook.
+
+**Alert adoption (live):** `Agent-Reach` (#4), `agentmemory` (#19). Copy `secret-scan.yml` + `secret-scan-alert.yml` from `.github/repo-templates/` to add more repos.
 
 **Vault sync:** Operational supplements from Obsidian `Projects/Tech/github-ops/` live in **[docs/from-vault/](docs/from-vault/)** (cheatsheet, rollout, nightly automation).
 
