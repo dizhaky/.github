@@ -1,6 +1,6 @@
 # Global native auto-merge reconciler
 
-`Global Auto-Merge Reconciler` runs every 15 minutes and supports manual dispatch
+`Global Auto-Merge Reconciler` runs every 30 minutes and supports manual dispatch
 on this repository's default branch. It discovers **all active repositories the
 credential administers**, including organization repositories, and re-enables
 `allow_auto_merge` and `delete_branch_on_merge` when either setting drifts or a

@@ -14,19 +14,15 @@ class APIError(RuntimeError):
     """A failed API call is an error, never an empty successful scan."""
 
 
-PR_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      id number state isDraft headRefOid baseRefName mergeable mergeStateStatus
-      reviewDecision viewerCanEnableAutoMerge autoMergeRequest { enabledAt }
-      baseRef { branchProtectionRule {
-        requiresStatusChecks requiredStatusCheckContexts
-      } }
-    }
-  }
+_MERGEABLE_STATE = {
+    "clean": "CLEAN",
+    "blocked": "BLOCKED",
+    "behind": "BEHIND",
+    "dirty": "DIRTY",
+    "unstable": "UNSTABLE",
+    "has_hooks": "UNSTABLE",
+    "unknown": "UNKNOWN",
 }
-"""
 
 
 class GitHub:
@@ -51,19 +47,93 @@ class GitHub:
             return [item for page in result for item in page]
         return result
 
+    def rest_optional(self, path, **kwargs):
+        try:
+            return self.rest(path, **kwargs)
+        except APIError:
+            return None
+
+    def rate_limit_remaining(self):
+        data = self.rest_optional("rate_limit") or {}
+        resources = data.get("resources") or {}
+        core = int((resources.get("core") or {}).get("remaining") or 0)
+        graphql = int((resources.get("graphql") or {}).get("remaining") or 0)
+        return core, graphql
+
+    @staticmethod
+    def _review_decision(reviews):
+        latest = {}
+        for review in reviews:
+            user = (review.get("user") or {}).get("login")
+            state = review.get("state")
+            if not user or state in (None, "COMMENTED", "PENDING"):
+                continue
+            latest[user] = state
+        states = set(latest.values())
+        if "CHANGES_REQUESTED" in states:
+            return "CHANGES_REQUESTED"
+        if "APPROVED" in states:
+            return "APPROVED"
+        return None
+
     def pull_request(self, repo, number):
-        owner, name = repo.split("/")
-        result = json.loads(self.run(["api", "graphql", "--input", "-"], {
-            "query": PR_QUERY, "variables": {"owner": owner, "name": name, "number": number},
-        }))
-        if result.get("errors") or not result.get("data", {}).get("repository"):
-            raise APIError("GraphQL pull-request query failed")
-        pr = result["data"]["repository"]["pullRequest"]
-        if pr is None:
-            raise APIError("Pull request unavailable")
-        return pr
+        """Return the GraphQL-shaped PR dict callers expect, via REST (DAN-3334).
+
+        Native enrollment (`gh pr merge --auto`) still needs GraphQL — GitHub
+        has no REST equivalent — but the per-PR GraphQL *lookup* is gone.
+        """
+        rest_pr = self.rest(f"repos/{repo}/pulls/{number}")
+        reviews = self.rest(
+            f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True,
+        )
+        base_ref = rest_pr["base"]["ref"]
+        protection = self.rest_optional(
+            f"repos/{repo}/branches/{quote(base_ref, safe='')}/protection",
+        )
+        status_checks = (protection or {}).get("required_status_checks") or {}
+        auto_merge = rest_pr.get("auto_merge")
+        mergeable = rest_pr.get("mergeable")
+        if mergeable is True:
+            mergeable_enum = "MERGEABLE"
+        elif mergeable is False:
+            mergeable_enum = "CONFLICTING"
+        else:
+            mergeable_enum = "UNKNOWN"
+        return {
+            "id": str(rest_pr["id"]),
+            "number": rest_pr["number"],
+            "state": (rest_pr.get("state") or "").upper(),
+            "isDraft": bool(rest_pr.get("draft")),
+            "headRefOid": rest_pr["head"]["sha"],
+            "baseRefName": base_ref,
+            "mergeable": mergeable_enum,
+            "mergeStateStatus": _MERGEABLE_STATE.get(
+                (rest_pr.get("mergeable_state") or "unknown").lower(), "UNKNOWN",
+            ),
+            "reviewDecision": self._review_decision(reviews),
+            "viewerCanEnableAutoMerge": (
+                not rest_pr.get("draft") and rest_pr.get("state") == "open"
+            ),
+            "autoMergeRequest": (
+                {"enabledAt": (auto_merge or {}).get("enabled_at") or "enabled"}
+                if auto_merge else None
+            ),
+            "baseRef": {
+                "branchProtectionRule": (
+                    {
+                        "requiresStatusChecks": bool(status_checks),
+                        "requiredStatusCheckContexts": list(
+                            status_checks.get("contexts") or [],
+                        ),
+                    }
+                    if protection is not None else None
+                ),
+            },
+        }
 
     def merge(self, repo, number, method, head, disable=False):
+        # Native auto-merge enrollment has no REST equivalent; this remains
+        # the sole GraphQL call site in this reconciler (DAN-3334).
         args = ["pr", "merge", str(number), "--repo", repo]
         args += ["--disable-auto"] if disable else [
             "--auto", f"--{method}", "--match-head-commit", head,
@@ -129,6 +199,19 @@ def evidence(api, repo, number):
 
 def reconcile(api, *, apply=False):
     report = {"apply": apply, "repositories": [], "pull_requests": [], "errors": 0}
+    core_remaining, graphql_remaining = (0, 0)
+    if hasattr(api, "rate_limit_remaining"):
+        core_remaining, graphql_remaining = api.rate_limit_remaining()
+    report["rate_limit"] = {"core": core_remaining, "graphql": graphql_remaining}
+    # Abort before a fleet-wide walk when either shared dizhaky budget is low.
+    if core_remaining and core_remaining < 100:
+        report["errors"] = 1
+        report["error"] = "rest_rate_limit_low"
+        return report
+    if graphql_remaining and graphql_remaining < 100:
+        report["errors"] = 1
+        report["error"] = "graphql_rate_limit_low"
+        return report
     repos = api.rest("user/repos?affiliation=owner,collaborator,organization_member&per_page=100", paginate=True)
     for listed in repos:
         if listed.get("archived") or listed.get("disabled") or not (listed.get("permissions") or {}).get("admin"):
@@ -154,6 +237,10 @@ def reconcile(api, *, apply=False):
             ) if current.get(field)), None)
             prs = api.rest(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
             for listed_pr in prs:
+                # Skip drafts from the list payload — avoids a REST PR+reviews
+                # round-trip that cannot enroll anyway (DAN-3334).
+                if listed_pr.get("draft"):
+                    continue
                 number = listed_pr["number"]
                 result = {"repo": repo, "number": number}
                 try:

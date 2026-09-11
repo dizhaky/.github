@@ -215,11 +215,51 @@ def test_native_merge_command_never_uses_admin_or_deletes_branches():
         ]
 
 
-def test_graphql_errors_do_not_become_empty_prs():
+def test_rest_errors_do_not_become_empty_prs():
     api = module.GitHub()
-    with patch.object(api, "run", return_value=json.dumps({"errors": [{"message": "unavailable"}]})):
+    with patch.object(api, "run", side_effect=module.APIError("unavailable")):
         with pytest.raises(module.APIError):
             api.pull_request("org/repo", 1)
+
+
+def test_pull_request_normalizes_rest_payload():
+    api = module.GitHub()
+    rest_pr = {
+        "id": 99, "number": 1, "state": "open", "draft": False,
+        "mergeable": True, "mergeable_state": "clean", "auto_merge": None,
+        "head": {"sha": "a" * 40}, "base": {"ref": "main"},
+    }
+    reviews = [
+        {"user": {"login": "alice"}, "state": "APPROVED"},
+        {"user": {"login": "bob"}, "state": "CHANGES_REQUESTED"},
+    ]
+    protection = {"required_status_checks": {"contexts": ["test"]}}
+
+    def fake_rest(path, **kwargs):
+        if path.endswith("/pulls/1"):
+            return rest_pr
+        if "/reviews" in path:
+            return reviews
+        if "/protection" in path:
+            return protection
+        raise AssertionError(path)
+
+    with patch.object(api, "rest", side_effect=fake_rest):
+        pr = api.pull_request("org/repo", 1)
+    assert pr["reviewDecision"] == "CHANGES_REQUESTED"
+    assert pr["mergeable"] == "MERGEABLE"
+    assert pr["mergeStateStatus"] == "CLEAN"
+    assert pr["headRefOid"] == "a" * 40
+    assert pr["baseRef"]["branchProtectionRule"]["requiredStatusCheckContexts"] == ["test"]
+
+
+def test_reconcile_aborts_when_graphql_budget_is_low():
+    api = FakeAPI()
+    api.rate_limit_remaining = lambda: (5000, 50)
+    result = module.reconcile(api, apply=True)
+    assert result["errors"] == 1
+    assert result["error"] == "graphql_rate_limit_low"
+    assert api.actions == []
 
 
 def test_admin_permission_loss_is_rechecked_before_mutation():

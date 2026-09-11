@@ -2,7 +2,10 @@ name: Global Auto-Merge Reconciler
 
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    # Half-hourly (was every 15m). Enrollment still needs one GraphQL call
+    # per eligible PR (`gh pr merge --auto`); halving cadence cuts shared
+    # dizhaky GraphQL spend from this reconciler ~50% (DAN-3334).
+    - cron: '7,37 * * * *'
   workflow_dispatch:
 
 permissions:
