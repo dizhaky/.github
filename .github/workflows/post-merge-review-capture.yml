@@ -65,7 +65,7 @@ jobs:
           ACTOR_ID=$(jq -er '.workflow_run.actor.id' "$GITHUB_EVENT_PATH")
           jq -e --argjson review "$REVIEW_ID" --argjson actor "$ACTOR_ID" --argjson pr "$PR_NUMBER" '
             .id == $review and .user.id == $actor and
-            ((.pull_request_url // .html_url // "") | test("/pulls?/" + ($pr | tostring))) and
+            ((.pull_request_url // .html_url // "") | test("/pulls?/" + ($pr | tostring) + "([/?#]|$)"))) and
             ((.commit_id // "") | test("^[0-9a-f]{40}$"))
           ' <<<"$REVIEW_JSON" > /dev/null
           printf 'pr_number=%s\nreview_id=%s\n' "$PR_NUMBER" "$REVIEW_ID" >> "$GITHUB_OUTPUT"
