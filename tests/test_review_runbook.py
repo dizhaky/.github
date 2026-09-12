@@ -42,6 +42,11 @@ class ReviewRunbookTest(unittest.TestCase):
         self.assertIn("- Post-Merge Review Capture", workflow)
         self.assertNotIn("- Codex Review Webhook", workflow)
 
+    def test_auto_merge_guards_against_missing_or_foreign_head_repo(self):
+        workflow = (ROOT / ".github/workflows/auto-merge.yml").read_text()
+        self.assertIn('[ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ]', workflow)
+        self.assertIn('[ -z "$HEAD_OWNER" ] || [ "$HEAD_OWNER" != "$REPO_OWNER" ]', workflow)
+
     def test_new_system_log_entries_have_canonical_metadata(self):
         log = (ROOT / "docs/system-log/2026-09-06.md").read_text()
         entries = [part for part in log.split("\n## ")[1:] if part.strip()]

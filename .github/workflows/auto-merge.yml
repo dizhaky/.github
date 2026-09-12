@@ -210,12 +210,12 @@ jobs:
               echo "  ✗ PR author is '$AUTHOR' (required: dizhaky) — skipping"
               continue
             fi
-            if [ -n "$HEAD_OWNER" ] && [ "$HEAD_OWNER" != "$REPO_OWNER" ]; then
-              echo "  ✗ PR is from fork ($HEAD_OWNER != $REPO_OWNER) — skipping"
+            if [ -z "$HEAD_OWNER" ] || [ "$HEAD_OWNER" != "$REPO_OWNER" ]; then
+              echo "  ✗ PR is from fork or unknown owner ($HEAD_OWNER != $REPO_OWNER) — skipping"
               continue
             fi
-            if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "$REPO" ]; then
-              echo "  ✗ PR is from fork or foreign repo ($HEAD_REPO != $REPO) — skipping"
+            if [ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+              echo "  ✗ PR head repository missing or foreign ($HEAD_REPO != $REPO) — skipping"
               continue
             fi
             if [ "$HAS_DO_NOT_MERGE" = "true" ]; then
