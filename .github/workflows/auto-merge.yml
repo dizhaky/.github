@@ -16,6 +16,7 @@ on:
       - DeepSeek PR Review
       - deepseek-review
       - Auto-Label PRs
+      - Post-Merge Review Payload
       - Post-Merge Review Capture
       - Template tests
     types:
@@ -189,6 +190,7 @@ jobs:
             IS_DRAFT=$(jq -r '.draft' <<<"$PR_JSON")
             AUTHOR=$(jq -r '.user.login // empty' <<<"$PR_JSON")
             HEAD_OWNER=$(jq -r '.head.repo.owner.login // empty' <<<"$PR_JSON")
+            HEAD_REPO=$(jq -r '.head.repo.full_name // empty' <<<"$PR_JSON")
             HEAD_REF=$(jq -r '.head.ref // empty' <<<"$PR_JSON")
             REPO_OWNER=$(echo "$REPO" | cut -d'/' -f1)
             MERGEABLE=$(jq -r '.mergeable' <<<"$PR_JSON")
@@ -210,6 +212,10 @@ jobs:
             fi
             if [ -n "$HEAD_OWNER" ] && [ "$HEAD_OWNER" != "$REPO_OWNER" ]; then
               echo "  ✗ PR is from fork ($HEAD_OWNER != $REPO_OWNER) — skipping"
+              continue
+            fi
+            if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "$REPO" ]; then
+              echo "  ✗ PR is from fork or foreign repo ($HEAD_REPO != $REPO) — skipping"
               continue
             fi
             if [ "$HAS_DO_NOT_MERGE" = "true" ]; then
@@ -305,9 +311,10 @@ jobs:
               "repos/$REPO/pulls/$PR_NUMBER/merge" --input "$MERGE_FILE" >/dev/null; then
               rm -f "$MERGE_FILE"
               echo "  ✓ Successfully merged PR #$PR_NUMBER"
-              if [ -n "$HEAD_REF" ]; then
+              if [ -n "$HEAD_REF" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+                ENC_HEAD_REF="$(printf '%s' "$HEAD_REF" | jq -sRr @uri)"
                 if ! retry_with_backoff gh api --method DELETE \
-                  "repos/$REPO/git/refs/heads/$HEAD_REF" >/dev/null 2>&1; then
+                  "repos/$REPO/git/refs/heads/$ENC_HEAD_REF" >/dev/null 2>&1; then
                   echo "  ! could not delete branch $HEAD_REF after merge (non-fatal)"
                 fi
               fi
