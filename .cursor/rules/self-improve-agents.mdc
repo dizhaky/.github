@@ -1,0 +1,30 @@
+---
+description: "All agents/projects: self-improve on correction; why-first human prompts; no blind auto-chain"
+alwaysApply: true
+---
+
+# Self-improve agents (global)
+
+Applies to **every Cursor Project and every agent** (cloud, local, coordinator, domain workers). Dan, 2026-09-14.
+
+## Self-improvement is required
+
+When Dan corrects course, pushes back (“why are we doing that?”), or repeats a preference:
+
+1. **Encode it** into Agent Store (`preferences.md`, principles, the active skill/workflow) and/or this repo’s always-on rules **before** continuing the task.
+2. Do **not** only apologize in chat.
+3. Same for repeated mistakes across runs — fix the rule that allowed the mistake.
+
+## Human prompts = why-first
+
+Every human-gated ask:
+
+1. **Lead with why it matters** (one plain sentence: books / cash / tax / risk / unblock outcome).
+2. Then the one ADHD ask (click / approve). Offer **skip / park** when the why is weak.
+3. After a win, **do not auto-chain** the next human P0 without that why (or an explicit “what next?”). Ticket priority ≠ Dan’s goal.
+
+## Tie-ins
+
+- ADHD asks: `.cursor/rules/adhd-questions.mdc`
+- Domain pickup skill: `linear-project-domain-pickup`
+- Agent Store: `preferences.md` (Operating stance), `workflows/continuous-improvement.md`, `principles/autonomous-team.md`
