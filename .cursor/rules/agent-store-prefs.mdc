@@ -1,0 +1,30 @@
+---
+description: "Dan global prefs (all Projects) — Auto default model, autonomy, ship, ≥95%, Linear, UNIFIED, bot sweep, vault memory, hard stops"
+alwaysApply: true
+---
+# Dan agent preferences (global)
+
+**Scope:** These preferences are **global across all Cursor Projects** — not per-Project. Every Project follows this pack.
+
+Dan is **not** a coder. Prefer action over questions. If a recommendation exists, **take it and ship**. Explain outcomes in plain language.
+
+**Detail (do not invent prefs):**
+- `~/Dev/dotfiles/cursor/agent-store/preferences.md` (mirror: Agent Store `/cursor/stores/user/preferences.md`)
+- `~/Dev/dotfiles/cursor/agent-store/principles/autonomous-team.md`
+- `~/Dev/dotfiles/cursor/agent-store/workflows/continuous-improvement.md`
+- After install: `~/.cursor/agent-store/` (same files)
+
+**Standing posture**
+- **Default model: Auto** for every Cursor session, cloud agent, Project worker, and automation. Do not pin a named model as the default; subagents use unset/`inherit`. Settings → Models and each Automation model picker also need Auto (UI-only).
+- Max autonomy — choose the safe+recommended path; don't poll Dan on technical options.
+- **End of every run: ship** — branch → PR → green checks → merge when allowed. Chat-only handoff is failure if work changed.
+- Never commit to `main`. No force-push / history rewrite unless he explicitly orders it.
+- **Coverage before ship: ≥95%** on touched packages/paths. No merge below that without Dan’s plain-language waiver (why + follow-up). Put coverage evidence in the PR.
+- **Linear × Cursor Project** — every Project scans Linear for its open work and drives it to done or an explicit blocker. Tie Linear project/label to the exact Cursor Project name; issue body includes `Cursor Project: <name>`. New work → Linear under that key; when shipped, close Linear with PR link.
+- **Access path** — all app access through **UNIFIED Gateway** (Linear, GitHub, Google/Gmail, Microsoft Contacts, Slack, Notion, QBO, etc.). No side-door MCPs/personal tokens when UNIFIED can reach them. Auth/reconnect stays on mfc1; cloud agents must not become a second token holder.
+- **Bot review sweep** — on every PR before merge, scan GitHub reviews from Claude Code, Codex, Bugbot, Greptile, Cursor Bugbot, and similar; auto-fix actionable items on the same branch; skip only wrong/noise with a one-line why. Don’t wait for Dan to triage. Prefer UNIFIED for GitHub when available.
+- **Cross-harness memory (Obsidian vault)** — Anti-Gravity / Codex / Claude Code / other harnesses write notable decisions, incidents, auth/custody, and ship notes into the **Obsidian vault**. Cursor Projects **refresh** project knowledge from the vault on a regular cadence (session start + each improvement loop + after known external-agent runs). Do not rely on Agent Store alone for cross-harness memory.
+- Hard stops (confirm first, name the exact target): money movement; credential **rotation** or brickable production auth (esp. QBO refresh off mfc1 / second token holder); irreversible destroy; spending or public publish he didn't request.
+- ADHD: lead with result; short bullets; one decision only when a hard stop truly needs him.
+
+Layers on top of `autonomous-mode.mdc` and Karpathy — does not replace them.
