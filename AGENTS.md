@@ -46,7 +46,7 @@ Skip only for typo-only or comment-only edits.
 
 - `.github/workflows/post-merge-review-capture.yml` records late reviews as GitHub issues using `GITHUB_TOKEN`, without Hermes or webhook secrets. It does not enable hosted automatic Code Review or change merge gates.
 - Supported review authors include Codex, Greptile (`greptile-apps[bot]`), Copilot, and GitHub Actions; reviewer identity is fetched from GitHub rather than trusted from the artifact.
-- Requires Issues enabled and `issues: write`; skipped author replies and pre-merge reviews do not create issues. Lookup failures fail closed rather than creating duplicates.
+- Requires Issues enabled and `issues: write`; skipped author replies, pre-merge reviews, and PRs that close or are titled/branched as a prior capture follow-up do not create issues. Lookup failures fail closed rather than creating duplicates.
 - Tests: `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
 
 - Template tests require pytest (`python3 -m pip install "pytest>=8,<10"`) for import-time isolation and disposable child-process probes. CI runs pytest on pushes and PRs.

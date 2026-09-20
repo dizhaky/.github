@@ -36,6 +36,8 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         self.assertIn("state=all&per_page=100", capture)
         self.assertIn("needs: validate", capture)
         self.assertNotIn("--search", capture)
+        self.assertIn("post-merge capture follow-up", capture)
+        self.assertIn("closes capture issue", capture)
 
     def run_capture(
         self,
@@ -58,6 +60,10 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         create_fail=False,
         head_sha=HEAD_SHA,
         commit_id=HEAD_SHA,
+        pr_title="A title | with a table break",
+        pr_body="",
+        head_ref="feature-branch",
+        closing_issues=None,
     ):
         validation, capture = CAPTURE.read_text().split("\n  capture:", 1)
         shell = "\n".join(
@@ -75,10 +81,12 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
             pr = {
                 "merged": merged,
                 "user": {"login": author},
-                "title": "A title | with a table break",
+                "title": pr_title,
+                "body": pr_body,
                 "html_url": "https://github.com/owner/repo/pull/12",
                 "merged_at": "2026-09-05T12:00:00Z",
                 "base": {"ref": base_ref},
+                "head": {"ref": head_ref},
             }
             review = {
                 "id": review_id,
@@ -123,6 +131,9 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                 )
             (root / "issues.json").write_text(json.dumps(issue_pages))
             (root / "pr.json").write_text(json.dumps(pr))
+            (root / "closing_issues.json").write_text(
+                json.dumps(closing_issues or {})
+            )
             (root / "review.json.fixture").write_text(json.dumps(review))
             gh = root / "gh"
             gh.write_text(
@@ -136,14 +147,26 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                     if args[0] == "api":
                         if os.environ.get("API_FAIL") == "1":
                             raise SystemExit(1)
+                        path = next(
+                            (a for a in args if a.startswith("repos/")), ""
+                        )
                         if "--paginate" in args:
                             assert "--slurp" in args
                             assert "state=all&per_page=100" in args[-1]
                             if os.environ.get("LOOKUP_FAIL") == "1":
                                 raise SystemExit(1)
                             print((root / "issues.json").read_text())
-                        elif "/reviews/" in args[1]:
+                        elif "/reviews/" in path:
                             print((root / "review.json.fixture").read_text())
+                        elif "/issues/" in path and path.rstrip("/").split("/")[-1].isdigit():
+                            num = path.rstrip("/").split("/")[-1]
+                            closing = json.loads(
+                                (root / "closing_issues.json").read_text()
+                            )
+                            print(json.dumps(closing.get(num, {
+                                "title": "Unrelated bug",
+                                "number": int(num),
+                            })))
                         else:
                             print((root / "pr.json").read_text())
                     elif args[:2] == ["issue", "create"]:
@@ -238,6 +261,42 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(mutations, [])
         self.assertIn("already captured", result.stdout)
+
+    def test_followup_title_does_not_create_issue(self):
+        result, mutations = self.run_capture(
+            pr_title="fix(cursor): address post-merge Codex review on #566"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("capture follow-up", result.stdout)
+
+    def test_followup_branch_does_not_create_issue(self):
+        result, mutations = self.run_capture(head_ref="fix/post-merge-567-codex")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("capture follow-up", result.stdout)
+
+    def test_fixes_capture_issue_does_not_create_issue(self):
+        result, mutations = self.run_capture(
+            pr_body="Fixes #567\n",
+            closing_issues={
+                "567": {
+                    "title": "Post-merge review 1 on #12 by chatgpt-codex-connector[bot]",
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("closes capture issue #567", result.stdout)
+
+    def test_fixes_unrelated_issue_still_creates_issue(self):
+        result, mutations = self.run_capture(
+            pr_body="Fixes #99\n",
+            closing_issues={"99": {"title": "Parser crash on empty input", "number": 99}},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
 
     def test_each_review_uses_a_distinct_issue_identity(self):
         result, mutations = self.run_capture(review_id=987)
