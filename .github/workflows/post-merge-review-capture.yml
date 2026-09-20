@@ -115,6 +115,8 @@ jobs:
           fi
 
           PR_TITLE=$(jq -r '.title | gsub("[|\\r\\n]"; " ")' <<<"$PR_JSON")
+          PR_BODY=$(jq -r '.body // ""' <<<"$PR_JSON")
+          HEAD_REF=$(jq -r '.head.ref // ""' <<<"$PR_JSON")
           PR_URL=$(jq -r '.html_url' <<<"$PR_JSON")
           BASE_REF=$(jq -r '.base.ref' <<<"$PR_JSON")
           MERGED_AT=$(jq -r '.merged_at' <<<"$PR_JSON")
@@ -122,6 +124,34 @@ jobs:
           REVIEW_STATE=$(jq -r '.state' <<<"$REVIEW_JSON")
           REVIEW_SUBMITTED_AT=$(jq -r '.submitted_at // ""' <<<"$REVIEW_JSON")
           REVIEW_BODY=$(jq -r '(.body // "")[:12000]' <<<"$REVIEW_JSON")
+
+          # Hydra kill: follow-ups that only address a prior capture must not
+          # spawn another. First-time reviews of ordinary feature PRs still capture.
+          if printf '%s\n%s\n' "$PR_TITLE" "$HEAD_REF" | grep -qiE \
+            'post-merge[[:space:]-]+((codex|cursor|greptile)[[:space:]-]+)?review|post-merge-[0-9]+'; then
+            echo "PR #$PR_NUMBER is a post-merge capture follow-up - nothing to capture"
+            exit 0
+          fi
+          CLOSE_NUMBERS=$(jq -r --arg title "$PR_TITLE" --arg body "$PR_BODY" -n '
+            ($title + "\n" + $body)
+            | [
+                scan("(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\\s]+(?:https://github[.]com/[^/\\s]+/[^/\\s]+/issues/|(?:[\\w.-]+/[\\w.-]+)?#)([0-9]+)")
+                | if type == "array" then .[0] else . end
+              ]
+            | unique[]
+          ')
+          if [ -n "$CLOSE_NUMBERS" ]; then
+            while IFS= read -r ISSUE_NUMBER; do
+              [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || continue
+              ISSUE_TITLE=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" | jq -r '.title // empty' || true)
+              case "$ISSUE_TITLE" in
+                "Post-merge review "*)
+                  echo "PR #$PR_NUMBER closes capture issue #$ISSUE_NUMBER - nothing to capture"
+                  exit 0
+                  ;;
+              esac
+            done <<<"$CLOSE_NUMBERS"
+          fi
 
           if [ -z "$REVIEW_SUBMITTED_AT" ] || [ -z "$MERGED_AT" ] \
              || [ "$MERGED_AT" = "null" ]; then
