@@ -130,13 +130,16 @@ jobs:
           # Match bot-specific review follow-up phrasing (with or without number),
           # or generic post-merge review follow-ups with an issue/review number.
           if printf '%s\n%s\n' "$PR_TITLE" "$HEAD_REF" | grep -qiE \
-            'post-merge[[:space:]-]+(codex|cursor|greptile|copilot)[[:space:]-]+review|post-merge-(review-)?[0-9]+|[0-9]+-post-merge|[0-9]+.*post-merge[[:space:]-]+review|post-merge[[:space:]-]+review.*[0-9]+'; then
+            'post-merge[[:space:]-]+(codex|cursor|greptile|copilot)[[:space:]-]+review|post-merge-(review-)?[0-9]+|[0-9]+.*post-merge[[:space:]-]+review|post-merge[[:space:]-]+review.*[0-9]+'; then
             echo "PR #$PR_NUMBER is a post-merge capture follow-up - nothing to capture"
             exit 0
           fi
 
           # Inspect both GitHub native closingIssuesReferences and closing keywords in PR title/body
-          CLOSING_REFS_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json closingIssuesReferences || true)
+          if ! CLOSING_REFS_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json closingIssuesReferences); then
+            echo "Error: Failed to fetch closingIssuesReferences for PR #$PR_NUMBER from $REPO" >&2
+            exit 1
+          fi
           TEXT_CLOSE_NUMBERS=$(jq -r --arg repo "$REPO" --arg title "$PR_TITLE" --arg body "$PR_BODY" -n '
             ($title + "\n" + $body)
             | [
@@ -162,7 +165,7 @@ jobs:
             ][]?
           ' <<<"$CLOSING_REFS_JSON")
           CANDIDATES=$(printf '%s\n%s\n' "$TEXT_CLOSE_NUMBERS" "$NATIVE_CLOSE_NUMBERS" | grep -E '^[0-9]+$' | sort -u || true)
-          CANDIDATE_COUNT=$(wc -l <<<"$CANDIDATES" | tr -d ' ')
+          CANDIDATE_COUNT=$(grep -c '^[0-9]' <<<"$CANDIDATES" || true)
           CLOSE_NUMBERS=$(head -n 10 <<<"$CANDIDATES" || true)
           if [ -n "$CLOSE_NUMBERS" ]; then
             while IFS= read -r ISSUE_NUMBER; do
@@ -185,8 +188,8 @@ jobs:
               fi
             done <<<"$CLOSE_NUMBERS"
             if [ "$CANDIDATE_COUNT" -gt 10 ]; then
-              echo "PR #$PR_NUMBER candidate closing issues ($CANDIDATE_COUNT) exceeded lookup cap; treating overflow as non-capturable - nothing to capture"
-              exit 0
+              echo "Error: PR #$PR_NUMBER candidate closing issues ($CANDIDATE_COUNT) exceeded lookup cap" >&2
+              exit 1
             fi
           fi
 
