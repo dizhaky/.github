@@ -66,6 +66,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         closing_issues=None,
         native_closing_refs=None,
         closing_lookup_fail=False,
+        repo="owner/repo",
     ):
         validation, capture = CAPTURE.read_text().split("\n  capture:", 1)
         shell = "\n".join(
@@ -211,7 +212,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                 env={
                     "PATH": str(root) + os.pathsep + os.environ["PATH"],
                     "FIXTURE_ROOT": str(root),
-                    "REPO": "owner/repo",
+                    "REPO": repo,
                     "PAYLOAD_FILE": str(payload),
                     "GITHUB_EVENT_PATH": str(root / "event.json"),
                     "GITHUB_OUTPUT": str(root / "outputs"),
@@ -481,6 +482,78 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                 {
                     "number": 567,
                     "repository": {"nameWithOwner": "other/repo"},
+                }
+            ],
+            closing_issues={
+                "567": {
+                    "title": (
+                        "Post-merge review 1 on #12 by "
+                        "chatgpt-codex-connector[bot]"
+                    ),
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
+
+    def test_closing_issues_exceed_cap_fails_closed(self):
+        body = " ".join(f"Closes #{100 + i}" for i in range(1, 13))
+        issues = {
+            str(100 + i): {"title": f"Ordinary bug {i}", "number": 100 + i}
+            for i in range(1, 13)
+        }
+        result, mutations = self.run_capture(
+            pr_body=body,
+            closing_issues=issues,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn(
+            "exceeded lookup cap; treating overflow as non-capturable",
+            result.stdout,
+        )
+
+    def test_closing_legacy_capture_issue_recognized(self):
+        result, mutations = self.run_capture(
+            pr_body="Closes #567",
+            closing_issues={
+                "567": {
+                    "title": (
+                        "Post-merge review on #12 by "
+                        "chatgpt-codex-connector[bot]"
+                    ),
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("closes capture issue #567", result.stdout)
+
+    def test_follow_up_number_before_phrase(self):
+        result, mutations = self.run_capture(
+            pr_title="#567: address post-merge Codex review",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("nothing to capture", result.stdout)
+
+    def test_follow_up_numberless_named_agent(self):
+        result, mutations = self.run_capture(
+            pr_title="address post-merge copilot review",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("nothing to capture", result.stdout)
+
+    def test_native_closing_issue_dot_in_repo_not_regex_wildcard(self):
+        result, mutations = self.run_capture(
+            repo="owner/.github",
+            native_closing_refs=[
+                {
+                    "number": 567,
+                    "url": "https://github.com/owner/xgithub/issues/567",
                 }
             ],
             closing_issues={

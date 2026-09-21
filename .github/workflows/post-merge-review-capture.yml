@@ -127,15 +127,16 @@ jobs:
 
           # Hydra kill: follow-ups that only address a prior capture must not
           # spawn another. First-time reviews of ordinary feature PRs still capture.
-          # Match generated capture title structure (with review ID) or capture branch naming.
+          # Match bot-specific review follow-up phrasing (with or without number),
+          # or generic post-merge review follow-ups with an issue/review number.
           if printf '%s\n%s\n' "$PR_TITLE" "$HEAD_REF" | grep -qiE \
-            'post-merge[[:space:]-]+((codex|cursor|greptile|copilot)[[:space:]-]+)?review.*[0-9]+|post-merge-(review-)?[0-9]+'; then
+            'post-merge[[:space:]-]+(codex|cursor|greptile|copilot)[[:space:]-]+review|post-merge-(review-)?[0-9]+|[0-9]+-post-merge|[0-9]+.*post-merge[[:space:]-]+review|post-merge[[:space:]-]+review.*[0-9]+'; then
             echo "PR #$PR_NUMBER is a post-merge capture follow-up - nothing to capture"
             exit 0
           fi
 
           # Inspect both GitHub native closingIssuesReferences and closing keywords in PR title/body
-          CLOSING_REFS_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json closingIssuesReferences)
+          CLOSING_REFS_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json closingIssuesReferences || true)
           TEXT_CLOSE_NUMBERS=$(jq -r --arg repo "$REPO" --arg title "$PR_TITLE" --arg body "$PR_BODY" -n '
             ($title + "\n" + $body)
             | [
@@ -146,6 +147,7 @@ jobs:
                     (.[1] != null and (.[1] | ascii_downcase) == ($repo | ascii_downcase))
                   )
                 | .[2]
+                | select(. != null)
               ]
             | unique[]
           ')
@@ -154,12 +156,14 @@ jobs:
               .closingIssuesReferences[]? |
               select(
                 ((.repository.nameWithOwner // "") | ascii_downcase) == ($repo | ascii_downcase) or
-                ((.url // "") | ascii_downcase | test("/" + ($repo | ascii_downcase) + "/issues/[0-9]+$"))
+                ((.url // "") | ascii_downcase | test("/" + ($repo | ascii_downcase | gsub("[.]"; "[.]")) + "/issues/[0-9]+$"))
               ) |
               .number
             ][]?
           ' <<<"$CLOSING_REFS_JSON")
-          CLOSE_NUMBERS=$(printf '%s\n%s\n' "$TEXT_CLOSE_NUMBERS" "$NATIVE_CLOSE_NUMBERS" | grep -E '^[0-9]+$' | sort -u | head -n 10 || true)
+          CANDIDATES=$(printf '%s\n%s\n' "$TEXT_CLOSE_NUMBERS" "$NATIVE_CLOSE_NUMBERS" | grep -E '^[0-9]+$' | sort -u || true)
+          CANDIDATE_COUNT=$(wc -l <<<"$CANDIDATES" | tr -d ' ')
+          CLOSE_NUMBERS=$(head -n 10 <<<"$CANDIDATES" || true)
           if [ -n "$CLOSE_NUMBERS" ]; then
             while IFS= read -r ISSUE_NUMBER; do
               [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || continue
@@ -169,7 +173,7 @@ jobs:
               fi
               IS_CAPTURE=$(jq -r '
                 if ((.body // "") | test("^<!--\\s*post-merge-review:[0-9]+\\s*-->")) or
-                   ((.title // "") | test("^Post-merge review [0-9]+ on #[0-9]+ by ")) then
+                   ((.title // "") | test("^Post-merge review ([0-9]+ )?on #[0-9]+ by ")) then
                   "true"
                 else
                   "false"
@@ -180,6 +184,10 @@ jobs:
                 exit 0
               fi
             done <<<"$CLOSE_NUMBERS"
+            if [ "$CANDIDATE_COUNT" -gt 10 ]; then
+              echo "PR #$PR_NUMBER candidate closing issues ($CANDIDATE_COUNT) exceeded lookup cap; treating overflow as non-capturable - nothing to capture"
+              exit 0
+            fi
           fi
 
           if [ -z "$REVIEW_SUBMITTED_AT" ] || [ -z "$MERGED_AT" ] \
