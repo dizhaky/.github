@@ -64,6 +64,8 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         pr_body="",
         head_ref="feature-branch",
         closing_issues=None,
+        native_closing_refs=None,
+        closing_lookup_fail=False,
     ):
         validation, capture = CAPTURE.read_text().split("\n  capture:", 1)
         shell = "\n".join(
@@ -134,6 +136,9 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
             (root / "closing_issues.json").write_text(
                 json.dumps(closing_issues or {})
             )
+            (root / "native_closing.json").write_text(
+                json.dumps(native_closing_refs or [])
+            )
             (root / "review.json.fixture").write_text(json.dumps(review))
             gh = root / "gh"
             gh.write_text(
@@ -144,7 +149,14 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                     from pathlib import Path
                     root = Path(os.environ["FIXTURE_ROOT"])
                     args = sys.argv[1:]
-                    if args[0] == "api":
+                    if args[:2] == ["pr", "view"]:
+                        refs = json.loads(
+                            (root / "native_closing.json").read_text()
+                        )
+                        print(
+                            json.dumps({"closingIssuesReferences": refs})
+                        )
+                    elif args[0] == "api":
                         if os.environ.get("API_FAIL") == "1":
                             raise SystemExit(1)
                         path = next(
@@ -158,7 +170,12 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                             print((root / "issues.json").read_text())
                         elif "/reviews/" in path:
                             print((root / "review.json.fixture").read_text())
-                        elif "/issues/" in path and path.rstrip("/").split("/")[-1].isdigit():
+                        elif (
+                            "/issues/" in path
+                            and path.rstrip("/").split("/")[-1].isdigit()
+                        ):
+                            if os.environ.get("CLOSING_LOOKUP_FAIL") == "1":
+                                raise SystemExit(1)
                             num = path.rstrip("/").split("/")[-1]
                             closing = json.loads(
                                 (root / "closing_issues.json").read_text()
@@ -202,6 +219,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                     "EXISTING": existing,
                     "API_FAIL": str(int(api_fail)),
                     "LOOKUP_FAIL": str(int(lookup_fail)),
+                    "CLOSING_LOOKUP_FAIL": str(int(closing_lookup_fail)),
                     "TMPDIR": str(root),
                 },
                 capture_output=True,
@@ -395,6 +413,88 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         result, mutations = self.run_capture(api_fail=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(mutations, [])
+
+    def test_closing_issue_lookup_failure_aborts(self):
+        result, mutations = self.run_capture(
+            pr_body="Fixes #567\n",
+            closing_lookup_fail=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(mutations, [])
+
+    def test_renamed_capture_issue_closed_skips(self):
+        result, mutations = self.run_capture(
+            pr_body="Fixes #567\n",
+            closing_issues={
+                "567": {
+                    "title": "Renamed triage issue",
+                    "body": "<!-- post-merge-review:1 -->\n\nSome findings",
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("closes capture issue #567", result.stdout)
+
+    def test_cross_repo_issue_reference_ignored(self):
+        result, mutations = self.run_capture(
+            pr_body="Fixes other/repo#567\n",
+            closing_issues={
+                "567": {
+                    "title": (
+                        "Post-merge review 1 on #12 by "
+                        "chatgpt-codex-connector[bot]"
+                    ),
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
+
+    def test_native_closing_issue_reference_skips(self):
+        result, mutations = self.run_capture(
+            native_closing_refs=[
+                {
+                    "number": 567,
+                    "repository": {"nameWithOwner": "owner/repo"},
+                }
+            ],
+            closing_issues={
+                "567": {
+                    "title": (
+                        "Post-merge review 1 on #12 by "
+                        "chatgpt-codex-connector[bot]"
+                    ),
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("closes capture issue #567", result.stdout)
+
+    def test_native_closing_issue_cross_repo_ignored(self):
+        result, mutations = self.run_capture(
+            native_closing_refs=[
+                {
+                    "number": 567,
+                    "repository": {"nameWithOwner": "other/repo"},
+                }
+            ],
+            closing_issues={
+                "567": {
+                    "title": (
+                        "Post-merge review 1 on #12 by "
+                        "chatgpt-codex-connector[bot]"
+                    ),
+                    "number": 567,
+                }
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
 
 
 if __name__ == "__main__":
