@@ -66,6 +66,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
         closing_issues=None,
         native_closing_refs=None,
         closing_lookup_fail=False,
+        pr_view_fail=False,
         repo="owner/repo",
     ):
         validation, capture = CAPTURE.read_text().split("\n  capture:", 1)
@@ -151,6 +152,8 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                     root = Path(os.environ["FIXTURE_ROOT"])
                     args = sys.argv[1:]
                     if args[:2] == ["pr", "view"]:
+                        if os.environ.get("PR_VIEW_FAIL") == "1":
+                            raise SystemExit(1)
                         refs = json.loads(
                             (root / "native_closing.json").read_text()
                         )
@@ -221,6 +224,7 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                     "API_FAIL": str(int(api_fail)),
                     "LOOKUP_FAIL": str(int(lookup_fail)),
                     "CLOSING_LOOKUP_FAIL": str(int(closing_lookup_fail)),
+                    "PR_VIEW_FAIL": str(int(pr_view_fail)),
                     "TMPDIR": str(root),
                 },
                 capture_output=True,
@@ -507,12 +511,17 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
             pr_body=body,
             closing_issues=issues,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(mutations, [])
-        self.assertIn(
-            "exceeded lookup cap; treating overflow as non-capturable",
-            result.stdout,
+        self.assertIn("exceeded lookup cap", result.stderr)
+
+    def test_pr_view_closing_issues_failure_aborts(self):
+        result, mutations = self.run_capture(
+            pr_view_fail=True,
         )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(mutations, [])
+        self.assertIn("Failed to fetch closingIssuesReferences", result.stderr)
 
     def test_closing_legacy_capture_issue_recognized(self):
         result, mutations = self.run_capture(
@@ -565,6 +574,13 @@ class PostMergeReviewCaptureTest(unittest.TestCase):
                     "number": 567,
                 }
             },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(mutations), 1)
+
+    def test_branch_post_merge_without_review_not_skipped(self):
+        result, mutations = self.run_capture(
+            head_ref="release/2026-post-merge-cleanup",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(mutations), 1)
