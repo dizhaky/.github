@@ -3,6 +3,13 @@ name: Reusable CI
 on:
   workflow_call:
     inputs:
+      runner:
+        type: string
+        default: '["self-hosted", "linux", "x64"]'
+        description: >-
+          JSON runs-on value. Defaults to the self-hosted Hetzner runner
+          (ci-runner-1, DAN-4030): GitHub-hosted minutes are retired for
+          private repos. Public callers may pass '"ubuntu-latest"' (free).
       node-version:
         type: string
         default: "22"
@@ -23,7 +30,7 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - uses: actions/checkout@v7
 

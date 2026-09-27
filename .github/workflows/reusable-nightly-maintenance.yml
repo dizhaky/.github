@@ -3,6 +3,13 @@ name: Reusable Nightly Maintenance
 on:
   workflow_call:
     inputs:
+      runner:
+        type: string
+        default: '["self-hosted", "linux", "x64"]'
+        description: >-
+          JSON runs-on value. Defaults to the self-hosted Hetzner runner
+          (ci-runner-1, DAN-4030): GitHub-hosted minutes are retired for
+          private repos. Public callers may pass '"ubuntu-latest"' (free).
       auto-fix:
         type: boolean
         default: false
@@ -24,7 +31,7 @@ permissions:
 jobs:
   secret-scan:
     if: inputs.full-secret-scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
     steps:
@@ -93,7 +100,7 @@ jobs:
           if-no-files-found: ignore
 
   alert-report:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       security-events: read
     steps:
@@ -115,7 +122,7 @@ jobs:
 
   auto-fix:
     if: inputs.auto-fix
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: write
       pull-requests: write
