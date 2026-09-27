@@ -14,6 +14,13 @@ name: Reusable Scan Failure Alert
 on:
   workflow_call:
     inputs:
+      runner:
+        type: string
+        default: '["self-hosted", "linux", "x64"]'
+        description: >-
+          JSON runs-on value. Defaults to the self-hosted Hetzner runner
+          (ci-runner-1, DAN-4030): GitHub-hosted minutes are retired for
+          private repos. Public callers may pass '"ubuntu-latest"' (free).
       workflow-name:
         type: string
         required: true
@@ -65,7 +72,7 @@ jobs:
     concurrency:
       group: scan-alert-${{ inputs.workflow-name }}-${{ inputs.branch }}
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - name: Find any existing open alert
         id: existing
