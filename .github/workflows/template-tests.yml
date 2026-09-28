@@ -5,6 +5,12 @@ on:
     branches: [main]
 permissions:
   contents: read
+# Cancel superseded runs of the same PR (new push = old run is moot); pushes
+# to main and scheduled runs are never cancelled. Cuts load on the MFC3 runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
