@@ -432,7 +432,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             if fresh["head"]["sha"] != head or lease_hold(policy, repo, fresh) or fresh_reason in {"draft_or_closed", "explicit_hold", "external_head_repository"}:
                 raise BoundaryError("head_or_owner_changed_before_push")
             # Preserve configured/native signing policy, never force unsigned.
-            native_signing=api.signatures_required(repo,pr["base"]["ref"])
+            native_signing=api.signatures_required(repo,fresh["base"]["ref"])
             configured_signing=run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
             signed=native_signing or configured_signing
             receipt["signing"]={"nativeRequired":native_signing,"configured":configured_signing,"requested":signed}
@@ -451,8 +451,12 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             commit_args=["commit",*(["-S"] if signed else []),"-m",f"fix: verified AI repair for PR #{number}"]
             run_git(root,*commit_args)
             new_head = run_git(root, "rev-parse", "HEAD")
+            fresh,fresh_reason,_,_=precheck(api,repo,number)
+            policy=refresh_leases(policy)
             active_authority(api,repo,fresh)
-            current_signing=api.signatures_required(repo,pr["base"]["ref"]) or run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
+            if fresh["head"]["sha"]!=head or fresh["head"]["ref"]!=pr["head"]["ref"] or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
+                raise BoundaryError("head_or_owner_changed_before_push")
+            current_signing=api.signatures_required(repo,fresh["base"]["ref"]) or run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
             if current_signing and not signed:
                 raise BoundaryError("signing_policy_changed_before_push")
             run_git(root, "push", "origin", f"HEAD:refs/heads/{pr['head']['ref']}")

@@ -38,6 +38,8 @@ repository's actual required native CI, using its existing permissions.
 
 A repair gets a second independent clean AI review, current-head and ownership
 checks, and a commit honoring configured/native signing on the original branch.
+Before a local push it refreshes the PR and lease again, refuses changed head refs
+or draft/hold boundaries, and checks signing against the current target branch.
 A configured signer uses the existing key and a normal no-force Git push. If
 native signatures are required but Git signing is not configured, the existing
 authenticated GitHub API creates a signed commit using `expectedHeadOid`. This

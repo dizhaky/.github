@@ -373,6 +373,33 @@ def test_server_api_ambiguous_post_is_never_retried(monkeypatch):
     assert writes==[("graphql","POST")]
 
 
+@pytest.mark.parametrize("drift",["draft_or_closed","explicit_hold","external_head_repository","branch_renamed","base_signature_added"])
+def test_local_repair_rechecks_native_pr_and_target_signing_before_push(delivery_flow,monkeypatch,drift):
+    api,ledger=delivery_flow;calls=[];checks=[];branches=[]
+    def precheck(*args):
+        checks.append(True);pr=copy.deepcopy(api.pr)
+        if len(checks)==3:
+            if drift=="branch_renamed":pr["head"]["ref"]="renamed"
+            if drift=="base_signature_added":pr["base"]["ref"]="signed-base"
+        return pr,drift if len(checks)==3 and drift in {"draft_or_closed","explicit_hold","external_head_repository"} else None,[],[]
+    def signing(repo,branch):branches.append(branch);return branch=="signed-base"
+    monkeypatch.setattr(delivery,"precheck",precheck);monkeypatch.setattr(api,"signatures_required",signing)
+    def git(root,*args):
+        calls.append(args)
+        if args[0]=="clone":
+            clone=Path(args[-1]);clone.mkdir();(clone/"a.py").write_text("value=1\n")
+        if args==("rev-parse","HEAD"):return "c"*40 if root==ROOT else "b"*40
+        if args==("diff","--name-only"):return "a.py"
+        return ""
+    monkeypatch.setattr(delivery,"run_git",git)
+    outputs=iter([clean(verdict="repair",patches=[{"path":"a.py","original_sha256":hashlib.sha256(b"value=1\n").hexdigest(),"content":"value=2\n"}]),clean()])
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda context:next(outputs))
+    assert result["outcome"]=="blocked"
+    assert result["reason"]==("signing_policy_changed_before_push" if drift=="base_signature_added" else "head_or_owner_changed_before_push")
+    assert not any(call[0]=="push" for call in calls)
+    if drift=="base_signature_added":assert branches==["main","signed-base"]
+
+
 def test_clean_native_ci_review_does_not_require_local_dependency_bootstrap(delivery_flow):
     api,ledger=delivery_flow;p=policy();p["tests"]={}
     result=delivery.deliver(api,ledger,p,"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
