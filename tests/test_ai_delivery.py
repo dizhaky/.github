@@ -506,6 +506,147 @@ def test_model_sees_all_inline_replies_and_never_truncated_review_findings(tmp_p
         delivery.context_from_clone(API(),tmp_path,"dizhaky/example",pr,None,[],[{"body":"x"*12_001}])
 
 
+def review_api(files,checks=None):
+    class API:
+        def rest(self,path,**kwargs):
+            assert kwargs.get("paginate")
+            if "/files?" in path:return files
+            if "/check-runs?" in path:return [{"check_runs":checks or []}]
+            if "/comments?" in path:return []
+            raise AssertionError(path)
+    return API()
+
+
+@pytest.mark.parametrize("path",[".github/workflows/ci.yml",".circleci/config.yml",".husky/pre-commit","scripts/ai_delivery.py","AGENTS.md","GATES.md",".gitattributes","CODEOWNERS"])
+def test_control_workflow_evidence_is_readable_but_generated_writes_stay_forbidden(tmp_path,monkeypatch,path):
+    target=tmp_path/path;target.parent.mkdir(parents=True,exist_ok=True);target.write_text("enabled=true\n")
+    item={"filename":path,"status":"added","additions":1,"deletions":0,"patch":"@@ -0,0 +1 @@\n+enabled=true","sha":hashlib.sha1(b"blob 13\0enabled=true\n").hexdigest()}
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    ctx=delivery.context_from_clone(review_api([item]),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+    assert ctx["files"][0]["content"]=="enabled=true\n" and ctx["files"][0]["diff"]==item["patch"]
+    with pytest.raises(proposal.BoundaryError):
+        proposal.apply_patches(tmp_path,[{"path":path,"original_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),"content":"enabled=false\n"}])
+    assert target.read_text()=="enabled=true\n"
+
+
+@pytest.mark.parametrize("path",[".git/config",".GIT/config","sub/.git/config",".codex/auth.json",".ssh/id_ed25519","secrets/token.txt",".ENV",".npmrc","./AGENTS.md","../outside","alias/ci.yml"])
+def test_review_evidence_rejects_credentials_noncanonical_paths_and_symlinks(tmp_path,path):
+    (tmp_path/"alias").symlink_to(tmp_path)
+    with pytest.raises(proposal.BoundaryError):proposal.evidence_path(tmp_path,path)
+
+
+def test_complete_native_evidence_preserves_diff_tail_and_all_failed_checks(tmp_path,monkeypatch):
+    text="x"*13_000+" important-tail\n";(tmp_path/"file.py").write_text(text)
+    patch="@@ -0,0 +1 @@\n+"+text.rstrip("\n")
+    item={"filename":"file.py","status":"added","additions":1,"deletions":0,"patch":patch,"sha":hashlib.sha1(b"blob "+str(len(text.encode())).encode()+b"\0"+text.encode()).hexdigest()}
+    checks=[{"name":str(index),"conclusion":"failure","output":{"summary":"full evidence"}} for index in range(6)]
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    ctx=delivery.context_from_clone(review_api([item],checks),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+    assert ctx["files"][0]["diff"]==patch and ctx["files"][0]["diff"].endswith("important-tail")
+    assert len(ctx["failedChecks"])==6
+
+
+@pytest.mark.parametrize("problem",["missing","truncated_hunk","missing_hunk","overflow","missing_current_file","wrong_blob"])
+def test_incomplete_or_overflow_native_evidence_holds_instead_of_omitting(tmp_path,monkeypatch,problem):
+    item={"filename":"file.py","status":"added","additions":1,"deletions":0,"patch":"@@ -0,0 +1 @@\n+value=1"};(tmp_path/"file.py").write_text("value=1\n")
+    if problem=="missing":item.update(status="removed",additions=0,deletions=100,patch=None);(tmp_path/"file.py").unlink()
+    if problem=="truncated_hunk":item["patch"]="@@ -0,0 +1,2 @@\n+value=1"
+    if problem=="missing_hunk":item["additions"]=2
+    if problem=="overflow":item["patch"]="@@ -0,0 +1 @@\n+"+"x"*80_000
+    if problem=="missing_current_file":(tmp_path/"file.py").unlink()
+    if problem=="wrong_blob":item["sha"]="f"*40
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    with pytest.raises(proposal.BoundaryError):delivery.context_from_clone(review_api([item]),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+
+
+def test_removed_file_evidence_retains_complete_deletions(tmp_path,monkeypatch):
+    item={"filename":"file.py","status":"removed","additions":0,"deletions":2,"patch":"@@ -1,2 +0,0 @@\n-old=1\n-old=2"}
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    ctx=delivery.context_from_clone(review_api([item]),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+    assert ctx["files"][0]["status"]=="removed" and ctx["files"][0]["deletions"]==2 and ctx["files"][0]["diff"]==item["patch"]
+
+
+def test_candidate_evidence_includes_bounded_diff_without_external_driver(tmp_path,monkeypatch):
+    (tmp_path/"file.py").write_text("value=2\n");(tmp_path/"new.py").write_text("added=1\n")
+    item={"filename":"file.py","status":"added","additions":1,"deletions":0,"patch":"@@ -0,0 +1 @@\n+value=1"};calls=[]
+    def git(root,*args):
+        calls.append(args)
+        if args==("diff","--name-only"):return "file.py"
+        if args==("ls-files","--others","--exclude-standard"):return "new.py"
+        assert args==("diff","--no-ext-diff","--no-textconv","--","file.py")
+        return "@@ -1 +1 @@\n-value=1\n+value=2"
+    monkeypatch.setattr(delivery,"run_git",git)
+    ctx=delivery.context_from_clone(review_api([item]),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+    assert "+value=2" in ctx["files"][0]["candidateDiff"]
+    assert "+added=1" in ctx["files"][1]["candidateDiff"] and ctx["files"][1]["diff"] is None
+
+
+def test_review_evidence_case_alias_files_hold_before_read(tmp_path,monkeypatch):
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    with pytest.raises(proposal.BoundaryError,match="duplicate_or_case_alias"):
+        delivery.context_from_clone(review_api([{"filename":"file.py"},{"filename":"FILE.py"}]),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+
+
+@pytest.mark.parametrize("problem",["summary","total"])
+def test_review_evidence_budget_holds_without_truncating_diagnostics(tmp_path,monkeypatch,problem):
+    checks=[{"name":str(index),"conclusion":"failure","output":{"summary":"x"*(12_001 if problem=="summary" else 10_000)}} for index in range(1 if problem=="summary" else 19)]
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    with pytest.raises(proposal.BoundaryError):delivery.context_from_clone(review_api([],checks),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+
+
+@pytest.mark.parametrize("paginate",[False,True])
+def test_native_temp_clone_credential_is_stripped_before_context_or_receipts(tmp_path,monkeypatch,paginate):
+    sentinel="native-private-field-sentinel"
+    raw={"full_name":"dizhaky/example","temp_clone_token":sentinel,"head":{"repo":{"TEMP_CLONE_TOKEN":sentinel,"full_name":"dizhaky/example"}}}
+    api=delivery.GitHub();monkeypatch.setattr(api,"run",lambda *args:json.dumps([[raw]] if paginate else raw))
+    clean=api.rest("repos/dizhaky/example",paginate=paginate)
+    ledger=delivery.Ledger(tmp_path/"state");ledger.record({"native":clean})
+    assert sentinel not in json.dumps(clean) and sentinel not in (ledger.root/"receipts.jsonl").read_text()
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    ctx=delivery.context_from_clone(review_api([]),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[{"id":"thread","temp_clone_token":sentinel,"unexpected":{"credential":sentinel}}],[])
+    assert sentinel not in json.dumps(ctx) and "unexpected" not in ctx["threads"][0]
+
+
+@pytest.mark.parametrize("change",["command","remove","coverage","pyproject"])
+def test_controls_changes_reject_whole_patch_set_before_any_write(tmp_path,change):
+    app=tmp_path/"app.py";app.write_text("value=1\n")
+    path="pyproject.toml" if change=="pyproject" else "package.json"
+    if change=="pyproject":
+        original='[tool.pytest.ini_options]\naddopts="--strict-markers"\n';content='[tool.pytest.ini_options]\naddopts="--ignore=tests"\n'
+    else:
+        before={"scripts":{"test":"real-security-suite"},"nyc":{"check-coverage":True},"dependencies":{"lib":"1"}};after=copy.deepcopy(before)
+        if change=="command":after["scripts"]["test"]="true"
+        if change=="remove":after.pop("scripts")
+        if change=="coverage":after["nyc"]["check-coverage"]=False
+        original=json.dumps(before);content=json.dumps(after)
+    target=tmp_path/path;target.write_text(original)
+    with pytest.raises(proposal.BoundaryError,match="test_controls_changed"):
+        proposal.apply_patches(tmp_path,[{"path":"app.py","original_sha256":hashlib.sha256(app.read_bytes()).hexdigest(),"content":"value=2\n"},{"path":path,"original_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),"content":content}])
+    assert app.read_text()=="value=1\n" and target.read_text()==original
+
+
+@pytest.mark.parametrize("path",["pytest.ini","conftest.py","jest.config.cjs","vitest.config.ts","vite.config.ts",".nycrc.yaml",".c8rc.json",".mocharc.js"])
+def test_controls_named_runner_configs_are_readable_but_unwritable(tmp_path,path):
+    (tmp_path/path).write_text("config")
+    assert proposal.evidence_path(tmp_path,path).read_text()=="config"
+    with pytest.raises(proposal.BoundaryError):proposal.apply_patches(tmp_path,[{"path":path,"original_sha256":hashlib.sha256(b"config").hexdigest(),"content":"disabled"}])
+
+
+@pytest.mark.parametrize("kind",["package","pyproject","poetry"])
+def test_controls_preserve_commands_while_allowing_dependency_only_repairs(tmp_path,kind):
+    path="package.json" if kind=="package" else "pyproject.toml"
+    if kind=="package":
+        before={"scripts":{"test":"real-security-suite"},"dependencies":{"lib":"1"}};after=copy.deepcopy(before);after["dependencies"]["lib"]="2"
+        original=json.dumps(before);content=json.dumps(after)
+    elif kind=="pyproject":
+        original='[project]\ndependencies=["lib==1"]\n[tool.pytest.ini_options]\naddopts="--strict-markers"\n';content=original.replace('lib==1','lib==2')
+    else:
+        original='[tool.poetry.dependencies]\nlib="1"\n';content=original.replace('lib="1"','lib="2"')
+    target=tmp_path/path;target.write_text(original)
+    assert proposal.apply_patches(tmp_path,[{"path":path,"original_sha256":hashlib.sha256(target.read_bytes()).hexdigest(),"content":content}])==[path]
+    assert target.read_text()==content
+
+
 @pytest.mark.parametrize("field",["archived","disabled"])
 def test_live_authority_drift_blocks_all_delivery_writes(delivery_flow,field):
     api,ledger=delivery_flow;original=api.rest

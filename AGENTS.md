@@ -57,6 +57,7 @@ Skip only for typo-only or comment-only edits.
 
 - `global-auto-merge.yml` reports active personal owned/administered repositories every 30 minutes using trusted default-branch code and existing authentication. It cannot change settings or enroll PRs; organization repositories are excluded. Repository general/Dependabot workflows and templates are also read-only reporters.
 - `scripts/ai_delivery.py` is the sole AI enrollment writer: bounded tool-free proposals, protected paths, hardened Git, no-force repair commits honoring configured/native signing, including verified GitHub CAS signing when natively required and local signing is disabled, actual new-head native CI, authoritative required reviews, renewable executor leases and fresh owner-created commit-status receipts. Drafts, holds and absent required CI stay held. Never execute PR scripts on the credentialed host. `scripts/launch_ai_delivery.py` verifies protected default source before each fresh single-cycle process; the prepared bootstrap installs outside Documents. See `docs/ai-delivery.md` for runtime and release gates.
+- Complete contained workflow/controller evidence is readable as untrusted data; generated CI/governance/instruction writes and package test-control changes remain forbidden. Missing, incomplete or oversized evidence holds rather than truncates. Native API token fields never enter receipts. The AI receipt gates controller enrollment without changing native protections; retire other writers before activation.
 
 ## Required secret-scan callers
 

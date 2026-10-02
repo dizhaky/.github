@@ -17,8 +17,18 @@ actual failures can receive a bounded repair while required reviews are pending.
 Clean certification and enrollment require authoritative native approval when
 branch protection or a ruleset requires approving or code-owner reviews.
 
-Codex receives bounded file content, diffs, native CI evidence and complete review
-comments as untrusted evidence in an empty temporary directory. The model returns
+Codex receives complete bounded file content, diffs, native CI evidence and review
+comments as untrusted evidence in an empty temporary directory. Read-only evidence
+can include workflow, controller, governance and instruction files; it never
+executes them. Canonical paths, root containment and symlink checks still apply,
+and Git/authentication directories, credential files and secret-like content hold
+the review. Native patches must contain complete unified hunks whose counts match
+the API metadata, and current file blobs must match the native blob hash. Missing
+or unsupported patches, incomplete counts and oversized evidence hold instead of
+silently truncating. Limits are 25 changed files, 80KB per file or patch, 12KB per
+diagnostic/comment and 180KB for the complete context. Every failed check is
+included. Candidate diffs disable external diff and textconv execution.
+The model returns
 a strict JSON proposal with whole-file content and original SHA256 hashes. It has
 no shell, web, image, MCP, app, plugin, hook or agent tools. Strict installed CLI
 configuration and a JSONL event allowlist reject unexpected capabilities, errors
@@ -31,7 +41,11 @@ GitHub and signing environment variables are removed from model subprocesses.
 The credentialed parent validates every patch before writing. Paths must be
 canonical, relative and free of symlink escapes; case aliases, duplicate targets,
 Git metadata, CI, governance, instructions, credentials and secret-like content
-are rejected. Materialization and staging disable Git hooks, filesystem monitors,
+are rejected for generated writes. Package scripts and recognized test/coverage
+controls cannot change; dependency-only manifest repairs remain allowed. All
+patches are validated before any file write. Native API decoding removes
+`temp_clone_token` recursively before evidence, reports or receipts, and model
+inputs select only necessary fields. Materialization and staging disable Git hooks, filesystem monitors,
 configured clean/smudge/process filters, submodule recursion and file/ext protocol
 execution. PR scripts are never executed on the Mac. Tests run through the
 repository's actual required native CI, using its existing permissions.
@@ -59,6 +73,11 @@ default-branch worker revision. Same-name Actions check runs cannot substitute f
 this receipt. Only this AI context is excluded from its own CI precheck. All other
 required checks and their app bindings are preserved. Receipt-only diagnostic
 guards are not enrollment authority and do not ignore unrelated pending CI.
+The controller does not require this AI status to be installed as a native required
+context. It enforces the AI receipt in its own enrollment path; existing native
+protections stay unchanged. This is logical controller enforcement, so other
+enrollment paths must be retired before activation. Repositories with no native
+required check contexts remain held even if optional CI passes.
 
 Immediately before normal protected `gh pr merge --auto --match-head-commit`, the
 controller rechecks active ownership, head, lease, native approvals and receipt.
@@ -127,6 +146,8 @@ The LaunchAgent uses existing authentication, absolute binaries and paths, a
 helper files before importing them; no authentication/configuration files are
 copied. Protected updates load a new controller process from the verified default
 revision; pulling Git beneath a running daemon does not reload imported code.
+The LaunchAgent calls the launcher, which explicitly passes `--apply` to the
+controller. The launcher itself has no `--apply` argument.
 Configured signing requires `-S` with the existing key; a locked configured signer
 holds its target. Native-required signatures with configured signing disabled use
 the verified GitHub signing route described above. Other repositories follow
@@ -144,8 +165,14 @@ PRs, verify the exact live no-tool backend and feed, verify existing signing, an
 exercise a real repair/new-head CI/review/receipt/native merge cycle, honoring the
 target signing policy. Retire
 all legacy enrollment paths, including templates, and disarm previously armed
-native requests during the coordinated cutover. Then union the AI status into
-existing required checks while preserving all existing app bindings and protections.
+native requests during the coordinated cutover. Keep native protection settings
+exact. Automatic approval review rejected the proposed fleet required-context
+rewrite because it would persistently change protections with an unregistered
+app binding before deployment and could block the fleet. That proposal is not a
+release step and must not be executed or bypassed. The prepared controller can
+operate against existing native checks, but it does not provide server-enforced AI
+gating. Remaining live legacy runs and existing armed merge requests need explicit
+cutover verification by the parent before logical controller enrollment starts.
 File presence and mocked tests do not prove deployment or a successful live loop.
 
 The local implementation's tests and runtime receipts are recorded in the parent

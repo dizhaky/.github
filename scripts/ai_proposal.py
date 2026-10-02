@@ -36,7 +36,9 @@ SCHEMA = {
     },
 }
 FORBIDDEN = (".git", ".codex", ".claude", ".agents", ".github", ".circleci", ".husky", ".ssh", ".gnupg", "secrets")
+SECRET_DIRS = (".git", ".codex", ".claude", ".agents", ".ssh", ".gnupg", "secrets")
 PROTECTED_NAMES = {name.casefold() for name in {"AGENTS.md", "CLAUDE.md", "GATES.md", "ai-delivery-policy.json", "ai_delivery.py", "ai_proposal.py", "global_auto_merge.py", "verify_ai_receipt.py", "read_ownership_feed.py", "launch_ai_delivery.py", "TEST-ISOLATION.md", ".gitattributes", ".gitmodules", ".gitlab-ci.yml", "Jenkinsfile", "CODEOWNERS", "SECURITY.md", ".npmrc"}}
+TEST_CONTROL_NAMES = {"pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg", ".coveragerc", "conftest.py", ".nycrc", ".nycrc.json", ".c8rc", ".c8rc.json", ".mocharc.json", ".mocharc.yml", ".mocharc.yaml"}
 SECRET_PATTERN = re.compile(r"(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})")
 
 
@@ -149,15 +151,10 @@ def propose(context, *, timeout=240, model="gpt-5.5", runner=subprocess.run, rec
         return proposal
 
 
-def safe_path(root, name):
+def contained_path(root, name):
     path = PurePosixPath(name)
-    folded=name.casefold()
-    if not name or not path.parts or path.is_absolute() or ".." in path.parts or "\\" in name or path.as_posix() != name or any(part.casefold() in FORBIDDEN for part in path.parts):
+    if not name or not path.parts or path.is_absolute() or ".." in path.parts or "\\" in name or path.as_posix() != name:
         raise BoundaryError("unsafe_patch_path")
-    if any(folded == prefix or folded.startswith(prefix + "/") for prefix in FORBIDDEN):
-        raise BoundaryError("protected_patch_path")
-    if path.name.casefold() in PROTECTED_NAMES or path.name.casefold().startswith(".env"):
-        raise BoundaryError("protected_patch_path")
     resolved_root = Path(root).resolve()
     target = resolved_root / path
     part = target
@@ -168,6 +165,52 @@ def safe_path(root, name):
     if not target.resolve().is_relative_to(resolved_root):
         raise BoundaryError("unsafe_patch_path")
     return target
+
+
+def safe_path(root, name):
+    target=contained_path(root,name)
+    path=PurePosixPath(name);folded=name.casefold()
+    if any(part.casefold() in FORBIDDEN for part in path.parts):
+        raise BoundaryError("unsafe_patch_path")
+    if any(folded == prefix or folded.startswith(prefix + "/") for prefix in FORBIDDEN):
+        raise BoundaryError("protected_patch_path")
+    base=path.name.casefold()
+    if base in PROTECTED_NAMES or base.startswith((".env",".nycrc.",".c8rc.",".mocharc.")) or base in TEST_CONTROL_NAMES or re.fullmatch(r"(?:jest|vitest|vite|c8|nyc|mocha|ava|playwright|cypress)\.config\.(?:[cm]?js|jsx|ts|tsx|json|ya?ml)",base):
+        raise BoundaryError("protected_patch_path")
+    return target
+
+
+def evidence_path(root,name):
+    target=contained_path(root,name)
+    path=PurePosixPath(name)
+    if any(part.casefold() in SECRET_DIRS for part in path.parts) or path.name.casefold().startswith(".env") or path.name.casefold()==".npmrc":
+        raise BoundaryError("credential_evidence_path")
+    return target
+
+
+def preserve_test_controls(name,original,content):
+    base=PurePosixPath(name).name.casefold()
+    if base not in {"package.json","pyproject.toml"}:return
+    try:
+        if base=="package.json":
+            before=json.loads(original.decode()) if original is not None else {}
+            after=json.loads(content.decode())
+            keys={"scripts","config","jest","vitest","nyc","c8","mocha","ava","tap","eslintConfig"}
+        else:
+            import tomllib
+            before=tomllib.loads(original.decode()) if original is not None else {}
+            after=tomllib.loads(content.decode())
+            before=before.get("tool",{});after=after.get("tool",{})
+            keys={"pytest","coverage","ruff","mypy","black","bandit","hatch"}
+            old_poetry=before.get("poetry",{});new_poetry=after.get("poetry",{})
+            if not isinstance(old_poetry,dict) or not isinstance(new_poetry,dict):raise ValueError()
+            if ("scripts" in old_poetry,old_poetry.get("scripts"))!=("scripts" in new_poetry,new_poetry.get("scripts")):
+                raise BoundaryError("test_controls_changed")
+        if not isinstance(before,dict) or not isinstance(after,dict):raise ValueError()
+        if any((key in before,before.get(key))!=(key in after,after.get(key)) for key in keys):
+            raise BoundaryError("test_controls_changed")
+    except (UnicodeError,ValueError,TypeError,AttributeError,ImportError):
+        raise BoundaryError("test_controls_unknown") from None
 
 
 def apply_patches(root, patches):
@@ -189,6 +232,7 @@ def apply_patches(root, patches):
         size += len(content)
         if b"\0" in content or len(content) > 100_000 or size > 250_000 or SECRET_PATTERN.search(patch["content"]):
             raise BoundaryError("large_binary_or_secret_patch")
+        preserve_test_controls(patch["path"],original,content)
         prepared.append((target, content))
     # No writes happen until the entire patch set has passed validation.
     for target, content in prepared:

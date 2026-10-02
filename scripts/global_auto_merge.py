@@ -79,6 +79,15 @@ _MERGEABLE_STATE = {
 }
 
 
+def native_data(value):
+    # This short-lived repository credential can occur in nested PR head repos.
+    # Drop it at decode time; consumers must never retain or print its value.
+    if isinstance(value,dict):
+        return {key:native_data(item) for key,item in value.items() if key.casefold()!="temp_clone_token"}
+    if isinstance(value,list):return [native_data(item) for item in value]
+    return value
+
+
 class GitHub:
     def native_review_decision(self,repo,number):
         owner,name=repo.split("/")
@@ -118,7 +127,7 @@ class GitHub:
             args += ["--paginate", "--slurp"]
         if body is not None:
             args += ["--input", "-"]
-        result = json.loads(self.run(args, body))
+        result = native_data(json.loads(self.run(args, body)))
         if paginate and all(isinstance(page, list) for page in result):
             return [item for page in result for item in page]
         return result

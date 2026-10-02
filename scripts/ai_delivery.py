@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import difflib
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -22,7 +23,7 @@ import time
 from urllib.parse import quote
 
 import global_auto_merge as merge
-from ai_proposal import BoundaryError, SECRET_PATTERN, apply_patches, propose, safe_path
+from ai_proposal import BoundaryError, SECRET_PATTERN, apply_patches, evidence_path, propose
 
 AI_CONTEXT = "AI Delivery / verified"
 HOLDS = {"do-not-merge", "hold", "manual-merge", "ai-delivery-hold"}
@@ -328,9 +329,39 @@ def server_signed_patch(api,root,repo,pr,paths):
     return api.create_signed_commit(repo,pr["head"]["ref"],pr["head"]["sha"],additions,tree)
 
 
+def complete_native_patch(item):
+    patch=item.get("patch")
+    if not isinstance(patch,str) or not patch:
+        raise BoundaryError("native_patch_missing")
+    if len(patch.encode())>80_000:
+        raise BoundaryError("native_patch_too_large")
+    old=new=0;expected=None;added=deleted=0
+    lines=patch.split("\n")
+    if lines[-1]=="":lines.pop()
+    for line in lines:
+        header=re.fullmatch(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*",line)
+        if header:
+            if expected is not None and (old,new)!=expected:
+                raise BoundaryError("native_patch_incomplete")
+            expected=(int(header[2] or 1),int(header[4] or 1));old=new=0
+        elif expected is None:
+            raise BoundaryError("native_patch_incomplete")
+        elif line.startswith(" "):old+=1;new+=1
+        elif line.startswith("+"):new+=1;added+=1
+        elif line.startswith("-"):old+=1;deleted+=1
+        elif line!="\\ No newline at end of file":
+            raise BoundaryError("native_patch_incomplete")
+    if expected is None or (old,new)!=expected or any(type(item.get(key)) is not int for key in ("additions","deletions")) or (added,deleted)!=(item["additions"],item["deletions"]):
+        raise BoundaryError("native_patch_incomplete")
+    return patch
+
+
 def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     files = api.rest(f"repos/{repo}/pulls/{pr['number']}/files?per_page=100", paginate=True)
     by_name = {item["filename"]:item for item in files}
+    if len(by_name)!=len(files) or len({name.casefold() for name in by_name})!=len(by_name):
+        raise BoundaryError("duplicate_or_case_alias_review_files")
+    native_names=set(by_name)
     modified = run_git(root, "diff", "--name-only").splitlines()
     added = run_git(root, "ls-files", "--others", "--exclude-standard").splitlines()
     for path in [*modified, *added]:
@@ -342,30 +373,53 @@ def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     for item in files:
         path = item["filename"]
         try:
-            target = safe_path(root, path)
+            target = evidence_path(root, path)
+            if item.get("previous_filename"):evidence_path(root,item["previous_filename"])
         except BoundaryError:
-            raise BoundaryError("changed_protected_or_symlink_file_requires_owner") from None
+            raise BoundaryError("unsafe_or_credential_review_evidence") from None
+        if path in native_names and item.get("status")!="removed" and not target.is_file():
+            raise BoundaryError("native_review_file_missing")
         content = target.read_bytes() if target.is_file() else b""
         if len(content) > 80_000 or b"\0" in content:
             raise BoundaryError("review_file_too_large_or_binary")
         text = content.decode()
         if SECRET_PATTERN.search(text):
             raise BoundaryError("secret_shaped_source_not_sent_to_model")
+        patch=complete_native_patch(item) if path in native_names else None
+        if path in native_names and item.get("status")!="removed" and path not in modified and path not in added:
+            blob=hashlib.sha1(b"blob "+str(len(content)).encode()+b"\0"+content).hexdigest()
+            if item.get("sha")!=blob:
+                raise BoundaryError("review_file_not_exact_native_blob")
+        candidate=None
+        if path in modified:
+            candidate=run_git(root,"diff","--no-ext-diff","--no-textconv","--",path)
+        elif path in added:
+            candidate="".join(difflib.unified_diff([],text.splitlines(keepends=True),fromfile="/dev/null",tofile=path))
+        if candidate is not None and (not candidate or len(candidate.encode())>80_000):
+            raise BoundaryError("candidate_patch_missing_or_too_large")
         evidence.append({"path": path, "original_sha256": hashlib.sha256(content).hexdigest() if target.is_file() else None,
-                         "content": text, "diff": item.get("patch", "")[:12_000]})
+                         "content": text, "diff": patch, "candidateDiff":candidate,
+                         "status":item.get("status"),"previousPath":item.get("previous_filename"),
+                         "additions":item.get("additions"),"deletions":item.get("deletions")})
     head = pr["head"]["sha"]
     pages = api.rest(f"repos/{repo}/commits/{head}/check-runs?filter=latest&per_page=100", paginate=True)
     failures = [{"name":row["name"],"conclusion":row.get("conclusion"),"title":(row.get("output") or {}).get("title"),
-                 "summary":(row.get("output") or {}).get("summary", "")[:12_000]} for page in pages for row in page["check_runs"] if row.get("conclusion") in {"failure","timed_out","action_required"} and row["name"] != AI_CONTEXT]
+                 "summary":(row.get("output") or {}).get("summary") or ""} for page in pages for row in page["check_runs"] if row.get("conclusion") in {"failure","timed_out","action_required"} and row["name"] != AI_CONTEXT]
+    if any(not isinstance(row["summary"],str) or len(row["summary"].encode())>12_000 for row in failures):
+        raise BoundaryError("check_evidence_too_large_or_invalid")
     comments = api.rest(f"repos/{repo}/pulls/{pr['number']}/comments?per_page=100",paginate=True)
     if any(len(row.get("body","").encode())>12_000 for row in [*reviews,*comments]):
         raise BoundaryError("review_evidence_too_large")
-    context = {"repo": repo, "number": pr["number"], "head": head, "blocker": reason, "failedChecks":failures[:5],
-            "files": evidence, "threads": threads,
+    review_threads=[{key:row.get(key) for key in ("id","isResolved","isOutdated")} | {"comments":{"nodes":[{key:comment.get(key) for key in ("id","databaseId","body","path","line")} for comment in row.get("comments",{}).get("nodes",[])]}} for row in threads]
+    context = {"repo": repo, "number": pr["number"], "head": head, "blocker": reason, "failedChecks":failures,
+            "failedStatuses":pr.get("deliveryFailedStatuses",[]),
+            "files": evidence, "threads": review_threads,
             "comments": [{key:row.get(key) for key in ("id","node_id","in_reply_to_id","body","path","line","original_line","commit_id")} | {"author":row.get("user",{}).get("login")} for row in comments],
             "reviews": [{"state": r["state"], "body": r.get("body", ""), "reviewer": r.get("user", {}).get("login")} for r in reviews]}
     if SECRET_PATTERN.search(json.dumps(context)):
         raise BoundaryError("secret_shaped_evidence_not_sent_to_model")
+    if len(json.dumps(context).encode())>180_000:
+        raise BoundaryError("review_context_too_large")
     return context
 
 

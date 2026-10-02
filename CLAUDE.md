@@ -22,6 +22,7 @@ GitHub Actions, Python rollout scripts
 - Existing Mac Codex login provides strict tool-free JSON proposals in an empty directory. The background application uses account-supported `gpt-5.5`; configured session models remain unchanged. Native required CI tests every current/new repair head; never run PR scripts on the Mac.
 - `scripts/launch_ai_delivery.py` validates protected default source/native CI, creates an atomic clean revision checkout and starts one process group per cycle. Prepared bootstrap/LaunchAgent artifacts in parent `rewrite/runtime/` install under `~/.local/share/codex-ai-delivery`, avoiding Documents TCC dependence.
 - Fresh ownership comes from the fixed private `dizhaky/github-infra#49` comment via `scripts/read_ownership_feed.py`; stale/unknown leases hold. Preserve signing, drafts, reviews, app-bound checks and unresolved findings. See `docs/ai-delivery.md` for service paths, receipt protocol, limits and release gates.
+- Read complete bounded workflow/controller evidence without granting generated write access to CI, governance, instructions or test controls. Missing/truncated/overflow evidence holds. Native API temporary token fields are stripped before context/report/receipt use. Controller AI certification needs no new native required-context setting; server AI enforcement is not claimed.
 
 ## Do / Don't
 
