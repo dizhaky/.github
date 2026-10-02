@@ -15,6 +15,15 @@ GitHub Actions, Python rollout scripts
 | Test | `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests` |
 | Lint | `n/a` |
 
+## Owned repository AI delivery (DAN-4186)
+
+- `scripts/ai_delivery.py` is the sole automated enrollment writer; scheduled global and local general/Dependabot workflows are read-only reporters. Scope is active personal owned/administered repositories only.
+- Read-only: `python3 scripts/ai_delivery.py --state-dir "$DELIVERY_STATE" --policy scripts/ai-delivery-policy.json --report "$DELIVERY_REPORT"`; writes require explicit `--apply` after coordinated protected release.
+- Existing Mac Codex login provides strict tool-free JSON proposals in an empty directory. The background application uses account-supported `gpt-5.5`; configured session models remain unchanged. Native required CI tests every current/new repair head; never run PR scripts on the Mac.
+- `scripts/launch_ai_delivery.py` validates protected default source/native CI, creates an atomic clean revision checkout and starts one process group per cycle. Prepared bootstrap/LaunchAgent artifacts in parent `rewrite/runtime/` install under `~/.local/share/codex-ai-delivery`, avoiding Documents TCC dependence.
+- Fresh ownership comes from the fixed private `dizhaky/github-infra#49` comment via `scripts/read_ownership_feed.py`; stale/unknown leases hold. Preserve signing, drafts, reviews, app-bound checks and unresolved findings. See `docs/ai-delivery.md` for service paths, receipt protocol, limits and release gates.
+- Read complete bounded workflow/controller evidence without granting generated write access to CI, governance, instructions or test controls. Missing/truncated/overflow evidence holds. Native API temporary token fields are stripped before context/report/receipt use. Controller AI certification needs no new native required-context setting; server AI enforcement is not claimed.
+
 ## Do / Don't
 
 - **Do:** Read `docs/system-log/` for recent changes before large refactors.

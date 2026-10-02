@@ -2,9 +2,8 @@ name: Global Auto-Merge Reconciler
 
 on:
   schedule:
-    # Half-hourly (was every 15m). Enrollment still needs one GraphQL call
-    # per eligible PR (`gh pr merge --auto`); halving cadence cuts shared
-    # dizhaky GraphQL spend from this reconciler ~50% (DAN-3334).
+    # Half-hourly owned-repository reporting. Enrollment belongs solely to
+    # the trusted AI delivery controller with fresh executor ownership.
     - cron: '7,37 * * * *'
   workflow_dispatch:
 
@@ -26,7 +25,14 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - name: Reconcile active administrator repositories
+      - name: Report protected owned repositories and delivery holds
         env:
           GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || secrets.GH_PAT }}
-        run: python3 scripts/global_auto_merge.py --apply
+        run: python3 scripts/global_auto_merge.py | tee delivery-report.json
+      - name: Retain delivery receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: delivery-receipts-${{ github.run_id }}
+          path: delivery-report.json
+          retention-days: 90
