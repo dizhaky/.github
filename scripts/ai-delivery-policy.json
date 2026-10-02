@@ -1,0 +1,6 @@
+{
+  "leasesVerifiedAt": "2026-10-02T00:00:00Z",
+  "leases": [],
+  "leaseMaxAgeSeconds": 4500,
+  "leaseCommand": ["python3", "scripts/read_ownership_feed.py", "--repo", "dizhaky/github-infra", "--issue", "49", "--author", "dizhaky", "--max-age", "4500", "--comment-id", "5960945356"]
+}

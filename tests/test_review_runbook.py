@@ -42,10 +42,13 @@ class ReviewRunbookTest(unittest.TestCase):
         self.assertIn("- Post-Merge Review Capture", workflow)
         self.assertNotIn("- Codex Review Webhook", workflow)
 
-    def test_auto_merge_guards_against_missing_or_foreign_head_repo(self):
+    def test_legacy_reporter_never_enrolls_missing_or_foreign_head_repositories(self):
         workflow = (ROOT / ".github/workflows/auto-merge.yml").read_text()
-        self.assertIn('[ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ]', workflow)
-        self.assertIn('[ -z "$HEAD_OWNER" ] || [ "$HEAD_OWNER" != "$REPO_OWNER" ]', workflow)
+        self.assertNotIn("gh pr merge",workflow)
+        self.assertNotIn("mergePullRequest",workflow)
+        self.assertNotIn("actions/checkout",workflow)
+        self.assertIn("pull-requests: read",workflow)
+        self.assertIn("github.repository_owner == 'dizhaky'",workflow)
 
     def test_new_system_log_entries_have_canonical_metadata(self):
         log = (ROOT / "docs/system-log/2026-09-06.md").read_text()

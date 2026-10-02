@@ -1,0 +1,44 @@
+name: Trusted AI Delivery Guard
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        required: true
+        type: string
+      number:
+        required: true
+        type: number
+      head:
+        required: true
+        type: string
+    secrets:
+      AUTO_MERGE_PAT:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read protected central default-branch guard
+        uses: actions/checkout@v7
+        with:
+          repository: dizhaky/.github
+          ref: main
+          persist-credentials: false
+      - name: Verify current holds and owner-created receipt
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT }}
+          DELIVERY_REPOSITORY: ${{ inputs.repository }}
+          DELIVERY_NUMBER: ${{ inputs.number }}
+          DELIVERY_HEAD: ${{ inputs.head }}
+        run: |
+          python3 scripts/verify_ai_receipt.py \
+            --repo "$DELIVERY_REPOSITORY" \
+            --number "$DELIVERY_NUMBER" \
+            --head "$DELIVERY_HEAD"
