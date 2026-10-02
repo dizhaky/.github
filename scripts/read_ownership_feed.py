@@ -8,18 +8,17 @@ from datetime import datetime, timezone
 import json
 import global_auto_merge as merge
 from ai_proposal import BoundaryError, SECRET_PATTERN
+from ai_delivery import active_authority
 
 MARKER = "<!-- ai-delivery-ownership-v1 -->\n"
 
 
 def read_feed(api,repo,number,author,max_age=4500,comment_id=None):
-    authenticated=api.rest("user")
-    identity=authenticated["login"]
-    metadata=api.rest(f"repos/{repo}")
-    if repo.split("/")[0].casefold()!=identity.casefold() or not metadata.get("private") or not metadata.get("permissions",{}).get("admin") or author!=identity:
+    identity,metadata=active_authority(api,repo)
+    if metadata.get("private") is not True or author!=identity:
         raise BoundaryError("private_owned_feed_required")
     rows=[api.rest(f"repos/{repo}/issues/comments/{comment_id}")] if comment_id else api.rest(f"repos/{repo}/issues/{number}/comments?per_page=100",paginate=True)
-    candidates=[row for row in rows if row.get("user",{}).get("login")==author and row.get("user",{}).get("id")==authenticated["id"] and (row.get("body") or "").startswith(MARKER)]
+    candidates=[row for row in rows if row.get("user",{}).get("login")==author and row.get("user",{}).get("id")==213320850 and (row.get("body") or "").startswith(MARKER)]
     if not candidates:
         raise BoundaryError("ownership_feed_missing")
     row=max(candidates,key=lambda value:value["id"])

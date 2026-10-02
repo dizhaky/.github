@@ -6,6 +6,7 @@ has no tools/credentials; only this single-writer controller calls GitHub.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 from datetime import datetime, timezone
 import fcntl
@@ -136,6 +137,24 @@ class GitHub(merge.GitHub):
             body["target_url"] = f"https://github.com/{repo.split('/')[0]}/.github/commit/{worker_revision}"
         return self.rest(f"repos/{repo}/statuses/{head}", method="POST", body=body)
 
+    def create_signed_commit(self,repo,branch,parent,files,tree):
+        if not 1<=len(files)<=10 or len(json.dumps(files).encode())>350_000:
+            raise BoundaryError("server_patch_outside_budget")
+        active_authority(self,repo,{"head":{"ref":branch}})
+        query="""mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid tree{oid} signature{isValid state}}ref{name target{oid}}}}"""
+        data=self.rest("graphql",method="POST",body={"query":query,"variables":{"input":{"branch":{"repositoryNameWithOwner":repo,"branchName":branch},"expectedHeadOid":parent,"message":{"headline":"fix: verified AI repair"},"fileChanges":{"additions":files}}}})
+        if data.get("errors"):raise BoundaryError("server_signed_commit_rejected")
+        result=data["data"]["createCommitOnBranch"];commit=result["commit"];head=commit["oid"]
+        signature=commit.get("signature") or {}
+        if not re.fullmatch(r"[0-9a-f]{40}",head) or commit["tree"]["oid"]!=tree or not signature.get("isValid") or signature.get("state")!="VALID" or result["ref"]["name"]!=branch or result["ref"]["target"]["oid"]!=head:
+            raise BoundaryError("server_commit_graph_verification_failed",{"remoteHead":head})
+        actual=self.rest(f"repos/{repo}/commits/{head}")
+        reference=self.rest(f"repos/{repo}/git/ref/heads/{quote(branch,safe='')}")
+        verification=actual["commit"]["verification"]
+        if actual["commit"]["tree"]["sha"]!=tree or [row["sha"] for row in actual["parents"]]!=[parent] or actual.get("author",{}).get("id")!=213320850 or actual.get("author",{}).get("login")!="dizhaky" or not verification.get("verified") or verification.get("reason")!="valid" or reference["ref"]!="refs/heads/"+branch or reference["object"]["sha"]!=head:
+            raise BoundaryError("server_commit_rest_verification_failed",{"remoteHead":head})
+        return head
+
     def resolve_thread(self, thread_id):
         query = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}"
         result = self.rest("graphql", method="POST", body={"query":query,"variables":{"id":thread_id}})
@@ -143,18 +162,38 @@ class GitHub(merge.GitHub):
             raise merge.APIError("thread_resolution_not_verified")
 
 
+def trusted_actor(api):
+    identity=api.rest("user")
+    if identity.get("login")!="dizhaky" or identity.get("id")!=213320850:
+        raise BoundaryError("authenticated_owner_changed")
+    return identity["login"]
+
+
 def owned_repositories(api):
-    identity = api.rest("user")["login"]
+    identity = trusted_actor(api)
     repositories = api.rest("user/repos?affiliation=owner&per_page=100", paginate=True)
-    return identity, [row for row in repositories if row["full_name"].split("/")[0].casefold() == identity.casefold()
-                      and not row.get("archived") and not row.get("disabled") and row.get("permissions", {}).get("admin")]
+    return identity, [row for row in repositories if owned_metadata(row,row.get("full_name",""),identity)]
 
 
-def active_authority(api,repo):
-    actor=api.rest("user")["login"]
+def owned_metadata(current,repo,actor):
+    owner=current.get("owner") or {}
+    return bool(repo and repo.split("/")[0].casefold()==actor.casefold()
+        and isinstance(current.get("full_name"),str) and current["full_name"].casefold()==repo.casefold()
+        and owner.get("login")==actor and owner.get("id")==213320850
+        and current.get("archived") is False and current.get("disabled") is False
+        and current.get("permissions",{}).get("admin") is True)
+
+
+def active_authority(api,repo,pr=None):
+    actor=trusted_actor(api)
     current=api.rest(f"repos/{repo}")
-    if repo.split("/")[0].casefold()!=actor.casefold() or current.get("archived") or current.get("disabled") or not current.get("permissions",{}).get("admin"):
+    if not owned_metadata(current,repo,actor):
         raise BoundaryError("ownership_changed")
+    if pr is not None:
+        if not isinstance(current.get("default_branch"),str) or not current["default_branch"]:
+            raise BoundaryError("default_branch_unknown")
+        if pr["head"]["ref"]==current["default_branch"]:
+            raise BoundaryError("default_branch_head_prohibited")
     return actor,current
 
 
@@ -267,6 +306,28 @@ def run_git(root, *args):
     return result.stdout.strip()
 
 
+def server_signed_patch(api,root,repo,pr,paths):
+    if not 1<=len(paths)<=10 or len(set(paths))!=len(paths):
+        raise BoundaryError("server_patch_outside_budget")
+    records=run_git(root,"ls-files","--stage","-z","--",*paths).split("\0")
+    additions=[];seen=set()
+    for record in records:
+        if not record:continue
+        metadata,path=record.split("\t",1);mode,blob,stage=metadata.split()
+        if path not in paths or path in seen or mode!="100644" or stage!="0":
+            raise BoundaryError("server_signing_requires_regular_exact_paths")
+        content=(root/path).read_bytes()
+        if len(content)>100_000:raise BoundaryError("server_patch_outside_budget")
+        expected=hashlib.sha1(b"blob "+str(len(content)).encode()+b"\0"+content).hexdigest()
+        if blob!=expected:raise BoundaryError("server_patch_not_exact_staged_blob")
+        additions.append({"path":path,"contents":base64.b64encode(content).decode()});seen.add(path)
+    if seen!=set(paths):raise BoundaryError("server_signing_incomplete_patch_index")
+    tree=run_git(root,"write-tree")
+    if not re.fullmatch(r"[0-9a-f]{40}",tree):raise BoundaryError("server_signing_expected_tree_invalid")
+    active_authority(api,repo,pr)
+    return api.create_signed_commit(repo,pr["head"]["ref"],pr["head"]["sha"],additions,tree)
+
+
 def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     files = api.rest(f"repos/{repo}/pulls/{pr['number']}/files?per_page=100", paginate=True)
     by_name = {item["filename"]:item for item in files}
@@ -316,6 +377,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
     root = None
     try:
         pr, reason, threads, reviews = precheck(api, repo, number)
+        active_authority(api,repo,pr)
         initial_review_evidence = merge.review_evidence(api,repo,number)
         head = pr["head"]["sha"]
         receipt["head"] = head
@@ -331,10 +393,11 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         changed_reviews = ledger.review_changed(repo,number,head,threads,reviews)
         if not ledger.reserve(repo, number, head, reopen=bool(reason or threads or changed_reviews)):
             return {**receipt, "outcome": "held", "reason": "attempt_budget_or_cooldown"}
-        actor,current=active_authority(api,repo)
+        actor,current=active_authority(api,repo,pr)
         code_root = Path(__file__).resolve().parents[1]
         worker_revision = run_git(code_root, "rev-parse", "HEAD")
-        deployed = api.rest(f"repos/{actor}/.github/commits/main")["sha"]
+        source=api.rest(f"repos/{actor}/.github")
+        deployed = api.rest(f"repos/{actor}/.github/commits/{quote(source['default_branch'],safe='')}")["sha"]
         if worker_revision != deployed or run_git(code_root,"status","--porcelain"):
             raise BoundaryError("trusted_worker_revision_not_deployed")
         api.status(repo, head, "pending", "AI review/repair pending; native checks and reviews remain required")
@@ -347,6 +410,8 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         if proposal["verdict"] == "blocked":
             raise BoundaryError("ai_evidence_insufficient")
         if proposal["verdict"] == "repair":
+            if repo=="dizhaky/.github" and any(row["path"].casefold().startswith("scripts/") for row in proposal["patches"]):
+                raise BoundaryError("protected_controller_source_change")
             receipt["changedFiles"] = apply_patches(root, proposal["patches"])
             expected_hashes = {path:hashlib.sha256((root/path).read_bytes()).hexdigest() for path in receipt["changedFiles"]}
             receipt["requiredTestBackend"] = "native_ci_on_new_head"
@@ -363,7 +428,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
                 raise BoundaryError("independent_review_not_clean")
             fresh, fresh_reason, _, _ = precheck(api, repo, number)
             policy=refresh_leases(policy)
-            active_authority(api,repo)
+            active_authority(api,repo,fresh)
             if fresh["head"]["sha"] != head or lease_hold(policy, repo, fresh) or fresh_reason in {"draft_or_closed", "explicit_hold", "external_head_repository"}:
                 raise BoundaryError("head_or_owner_changed_before_push")
             # Preserve configured/native signing policy, never force unsigned.
@@ -372,10 +437,21 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             signed=native_signing or configured_signing
             receipt["signing"]={"nativeRequired":native_signing,"configured":configured_signing,"requested":signed}
             run_git(root, "add", "--", *receipt["changedFiles"])
+            if native_signing and not configured_signing:
+                policy=refresh_leases(policy)
+                fresh,fresh_reason,_,_=precheck(api,repo,number)
+                if fresh["head"]["sha"]!=head or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
+                    raise BoundaryError("head_or_owner_changed_before_server_commit")
+                if run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true":
+                    raise BoundaryError("configured_signing_changed_before_server_commit")
+                new_head=server_signed_patch(api,root,repo,fresh,receipt["changedFiles"])
+                receipt["signing"]["backend"]="github_verified"
+                return {**receipt,"outcome":"repaired_waiting_native_ci","newHead":new_head}
+            receipt["signing"]["backend"]="configured_git"
             commit_args=["commit",*(["-S"] if signed else []),"-m",f"fix: verified AI repair for PR #{number}"]
             run_git(root,*commit_args)
             new_head = run_git(root, "rev-parse", "HEAD")
-            active_authority(api,repo)
+            active_authority(api,repo,fresh)
             current_signing=api.signatures_required(repo,pr["base"]["ref"]) or run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
             if current_signing and not signed:
                 raise BoundaryError("signing_policy_changed_before_push")
@@ -389,7 +465,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         # never satisfied by the model's own clean answer.
         fresh, native_reason, fresh_threads, _ = precheck(api, repo, number)
         policy=refresh_leases(policy)
-        active_authority(api,repo)
+        active_authority(api,repo,fresh)
         if fresh["head"]["sha"] != head or lease_hold(policy, repo, fresh):
             raise BoundaryError("head_or_owner_changed_before_status")
         receipt["nativeAfter"]=fresh.get("deliveryNativeEvidence")
@@ -416,7 +492,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         verified, native_reason = merge.evidence(api, repo, number)
         if verified["headRefOid"] != head or native_reason:
             raise BoundaryError("native_gate_changed_before_enrollment")
-        owner,current=active_authority(api,repo)
+        owner,current=active_authority(api,repo,fresh)
         method = next((method for field, method in (("allow_squash_merge", "squash"), ("allow_merge_commit", "merge"), ("allow_rebase_merge", "rebase")) if current.get(field)), None)
         if not method:
             raise BoundaryError("native_merge_setting_missing")

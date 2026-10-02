@@ -2,7 +2,8 @@
 
 `scripts/ai_delivery.py` is the sole automated PR enrollment writer. It discovers
 all active personal repositories owned and administered by the authenticated
-GitHub user. Organization repositories, external head repositories, archived or
+GitHub user. Every live authority check binds the returned repository name and
+owner login/ID, so transferred-repository redirects hold before writes. Organization repositories, external head repositories, archived or
 disabled repositories, drafts, explicit holds and active executor leases stay
 held. Existing repository CI, security checks, reviews and signing remain native
 merge gates. Repository workflows and the scheduled global reconciler only report
@@ -36,8 +37,14 @@ execution. PR scripts are never executed on the Mac. Tests run through the
 repository's actual required native CI, using its existing permissions.
 
 A repair gets a second independent clean AI review, current-head and ownership
-checks, a commit honoring configured/native signing and a normal no-force push to the original
-branch. It then waits for actual CI on that new SHA. No success receipt is issued
+checks, and a commit honoring configured/native signing on the original branch.
+A configured signer uses the existing key and a normal no-force Git push. If
+native signatures are required but Git signing is not configured, the existing
+authenticated GitHub API creates a signed commit using `expectedHeadOid`. This
+route accepts only exact staged regular `100644` files and verifies the complete
+tree, sole parent, owner identity, signature and branch ref independently. Unknown
+write outcomes are never retried. Default-branch PR heads, including reverse PRs,
+are held before any write. It then waits for actual CI on that new SHA. No success receipt is issued
 for a merely proposed repair or a new head whose native tests have not passed.
 Repositories without real required checks stay held.
 
@@ -98,14 +105,31 @@ recorded separately so a broken repository cannot starve other owned repositorie
 Provider diagnostics retain event types, usage and error reasons without prompts,
 tool arguments or credential values. Unknown mutation outcomes are not retried.
 
-The parent release installs the Mac LaunchAgent using existing authentication,
-absolute runtime paths, persistent state and bounded rotated stdout/stderr logs.
-Its single-cycle launcher must load a clean, verified default-branch revision anew
-after a safe update; pulling Git beneath an already running Python daemon does not
-reload imported code. Signing follows Git configuration or a live native signature
-requirement: either requires `-S`, with the existing key. A locked signer holds only
-that target; configured unsigned repositories follow their existing default without
-an unsigned override. Native signature policy is re-read before push; new signature
+The prepared `scripts/launch_ai_delivery.py` verifies the exact known owner login
+and ID, active admin authority, the repository default branch, protection, required
+native CI/app bindings and required commit signature before code execution. It
+uses hardened Git to fetch without checkout, pins and checks the exact clean SHA,
+atomically installs a revision directory, then repeats native source verification.
+Only regular controller/policy files inside that checkout can execute. Optional
+scheduled reporter checks do not replace or deadlock required source CI. No repo
+install commands run. The controller runs in a new process group each cycle;
+its 2400-second timeout terminates its whole process group before releasing locks.
+
+The parent release installs the reviewed pinned bootstrap bundle under
+`~/.local/share/codex-ai-delivery`, with
+`~/Library/LaunchAgents/com.dizhaky.ai-delivery.plist`; task artifacts remain in
+`rewrite/runtime/` for review. There is no runtime dependency on Documents access.
+The LaunchAgent uses existing authentication, absolute binaries and paths, a
+900-second interval, permanent SQLite/JSONL state and stdout/stderr rotation at
+5MiB with 5 retained segments. The prepared bootstrap hashes its four trusted
+helper files before importing them; no authentication/configuration files are
+copied. Protected updates load a new controller process from the verified default
+revision; pulling Git beneath a running daemon does not reload imported code.
+Configured signing requires `-S` with the existing key; a locked configured signer
+holds its target. Native-required signatures with configured signing disabled use
+the verified GitHub signing route described above. Other repositories follow
+their existing default without an unsigned override. Native signature policy is
+re-read before push, and configured signing is re-read before the server route; new signature
 requirements hold an already unsigned commit. Native CI works independently, but AI repair and
 certification require the Mac awake and connected. Restart/sleep resume uses the
 durable cursor and attempt ledger.
@@ -123,5 +147,7 @@ existing required checks while preserving all existing app bindings and protecti
 File presence and mocked tests do not prove deployment or a successful live loop.
 
 The local implementation's tests and runtime receipts are recorded in the parent
-`rewrite/manifests/central.json`. Deployment, target-specific signing unblock and the live complete
-cycle remain explicit release gates, not claims made by this source change.
+`rewrite/manifests/central.json`. The parent verified a real GitHub-signed task
+branch commit in Organize with its existing authentication, exact tree and owner
+signature; its protected default branch stayed unchanged. Deployment and a live
+complete cycle remain release gates, not claims made by this source change.

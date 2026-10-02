@@ -36,7 +36,7 @@ SCHEMA = {
     },
 }
 FORBIDDEN = (".git", ".codex", ".claude", ".agents", ".github", ".circleci", ".husky", ".ssh", ".gnupg", "secrets")
-PROTECTED_NAMES = {name.casefold() for name in {"AGENTS.md", "CLAUDE.md", "GATES.md", "ai-delivery-policy.json", "ai_delivery.py", "ai_proposal.py", "global_auto_merge.py", "verify_ai_receipt.py", "read_ownership_feed.py", "TEST-ISOLATION.md", ".gitattributes", ".gitmodules", ".gitlab-ci.yml", "Jenkinsfile", "CODEOWNERS", "SECURITY.md", ".npmrc"}}
+PROTECTED_NAMES = {name.casefold() for name in {"AGENTS.md", "CLAUDE.md", "GATES.md", "ai-delivery-policy.json", "ai_delivery.py", "ai_proposal.py", "global_auto_merge.py", "verify_ai_receipt.py", "read_ownership_feed.py", "launch_ai_delivery.py", "TEST-ISOLATION.md", ".gitattributes", ".gitmodules", ".gitlab-ci.yml", "Jenkinsfile", "CODEOWNERS", "SECURITY.md", ".npmrc"}}
 SECRET_PATTERN = re.compile(r"(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})")
 
 
