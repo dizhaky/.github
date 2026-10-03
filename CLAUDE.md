@@ -1,53 +1,6 @@
-# .github
+@AGENTS.md
 
-> **Purpose:** Central GitHub templates, reusable workflows, and account hygiene
+Tests pin these strings here (`tests/test_review_runbook.py`, `tests/test_reusable_workflows.py`):
 
-## Stack
-
-GitHub Actions, Python rollout scripts
-
-## Commands
-
-| Action | Command |
-|--------|---------|
-| Install | `n/a` |
-| Run | `gh workflow run nightly-health-check.yml -R dizhaky/.github` |
-| Test | `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests` |
-| Lint | `n/a` |
-
-## Do / Don't
-
-- **Do:** Read `docs/system-log/` for recent changes before large refactors.
-- **Do:** Update this file when commands, architecture, CI, or env vars change.
-- **Don't:** Commit secrets. Redact tokens and credential paths in logs and docs.
-
-## Documentation duty
-
-Before finishing any non-trivial session:
-
-1. **System log** — Append to `docs/system-log/YYYY-MM-DD.md` (UTC timestamp, repos touched, summary, commits/PRs, follow-ups).
-2. **Agent files** — Update `CLAUDE.md` and/or `AGENTS.md` if commands, architecture, CI, security, or gotchas changed.
-3. **Obsidian** — For cross-repo or operational work, update a note under `Projects/Tech/` and link from [[Projects/Tech/github-ops/RUNBOOKS|GitHub Ops Runbooks]].
-4. **No secrets** in logs or markdown.
-
-Skip only for typo-only or comment-only edits.
-
-## References
-
-- System log format: `docs/system-log/README.md`
-- Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=obsidian-vault&file=Projects/Tech/GitHub%20Ops/01_Reference/RUNBOOKS)
-- Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=obsidian-vault&file=Projects/Tech/Agent%20Documentation/01_Reference/STANDARDS)
-- Central templates: [dizhaky/.github](https://github.com/dizhaky/.github)
-
-## GitHub-native review capture
-
-- `.github/workflows/post-merge-review-capture.yml` records late reviews as GitHub issues using `GITHUB_TOKEN`, without Hermes or webhook secrets. It does not enable hosted automatic Code Review or change merge gates.
-- Requires Issues enabled and `issues: write`; skipped author replies, pre-merge reviews, and PRs that close or are titled/branched as a prior capture follow-up do not create issues. Lookup failures fail closed rather than creating duplicates.
-- Uses `actions/upload-artifact@v7` and `actions/download-artifact@v8` for two-stage artifact transfer.
-- Tests: `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
-
-## Self-hosted runner policy (DAN-4030)
-
-- Reusable workflows (`reusable-ci.yml`, `reusable-nightly-maintenance.yml`, `reusable-scan-failure-alert.yml`, `reusable-secret-scan.yml`) accept a `runner` input which defaults to `'"ubuntu-latest"'`.
-- Repositories migrated to the Hetzner self-hosted runner infrastructure (MFC3 / ci-runner-1, `DAN-4030`) explicitly pass `runner: '["self-hosted", "linux", "x64", "hetzner"]'` (or equivalent labels).
-- Public repositories or repos without registered self-hosted runners omit `runner` to use GitHub-hosted `ubuntu-latest` without risk of sitting queued indefinitely.
+- Test: `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests`
+- Runner policy: DAN-4030 (see AGENTS.md → Self-hosted runner policy).
