@@ -4,13 +4,13 @@ Append-only daily log of agent and automation activity in this repo.
 
 ## File naming
 
-- One file per UTC day: `YYYY-MM-DD.md`
+- One file per Eastern (America/New_York) day: `YYYY-MM-DD.md`
 - Create the file on first entry; never rewrite prior days
 
 ## Entry format
 
 ```markdown
-## YYYY-MM-DDTHH:MM:SSZ — Short title (agent/tool)
+## YYYY-MM-DDTHH:MM:SS-04:00 — Short title (agent/tool)
 
 - **Agent/tool:** Cursor | Claude Code | GitHub Actions | manual
 - **Repos:** repo-a, repo-b
@@ -23,7 +23,7 @@ Append-only daily log of agent and automation activity in this repo.
 
 1. **Append only** — do not edit or delete prior entries except to redact secrets
 2. **No secrets** — redact tokens, API keys, passwords, and credential file paths
-3. **UTC timestamps** — use ISO-8601 with `Z` suffix
+3. **Eastern timestamps** — ISO-8601 with an explicit `-04:00`/`-05:00` offset (America/New_York); older `Z` entries stay as written
 4. **One session, one entry** — merge related work from the same session into a single entry
 
 ## When to log
@@ -34,4 +34,4 @@ Skip for typo-only or comment-only changes.
 
 ## Canonical spec
 
-Account-wide standards live in [dizhaky/.github `docs/system-log/README.md`](https://github.com/dizhaky/.github/blob/main/docs/system-log/README.md) and Obsidian [[Projects/Tech/agent-documentation/STANDARDS|Agent Documentation Standards]].
+Account-wide standards live in [dizhaky/.github `docs/system-log/README.md`](https://github.com/dizhaky/.github/blob/main/docs/system-log/README.md) and Obsidian [[Projects/Tech/Agent Documentation/Reference/STANDARDS|Agent Documentation Standards]].
