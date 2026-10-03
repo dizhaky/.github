@@ -10,7 +10,7 @@ Append-only daily log of agent and automation activity in this repo.
 ## Entry format
 
 ```markdown
-## YYYY-MM-DDTHH:MM:SS-04:00 — Short title (agent/tool)
+## YYYY-MM-DDTHH:MM:SS±HH:MM — Short title (agent/tool)
 
 - **Agent/tool:** Cursor | Claude Code | GitHub Actions | manual
 - **Repos:** repo-a, repo-b
@@ -23,7 +23,7 @@ Append-only daily log of agent and automation activity in this repo.
 
 1. **Append only** — do not edit or delete prior entries except to redact secrets
 2. **No secrets** — redact tokens, API keys, passwords, and credential file paths
-3. **Eastern timestamps** — ISO-8601 with an explicit `-04:00`/`-05:00` offset (America/New_York); older `Z` entries stay as written
+3. **Eastern timestamps** — ISO-8601 with an explicit offset (`-04:00` EDT, `-05:00` EST; America/New_York); older `Z` entries stay as written
 4. **One session, one entry** — merge related work from the same session into a single entry
 
 ## When to log
