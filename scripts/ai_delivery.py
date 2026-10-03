@@ -612,6 +612,29 @@ def cycle(api, ledger, policy, *, apply=False, budget=3):
     return {"owner": owner, "ownedRepositories": len(repositories), "processed": len(results), "apply": apply, "results": results,"discoveryErrors":discovery_errors}
 
 
+def sanitize_for_logging(value):
+    sensitive_keys = {
+        "owner", "login", "id", "token", "secret", "password", "authorization",
+        "access_token", "refresh_token", "client_secret", "private_key"
+    }
+    if isinstance(value, dict):
+        redacted = {}
+        for k, v in value.items():
+            key = str(k).casefold()
+            if key in sensitive_keys:
+                redacted[k] = "[REDACTED]"
+            else:
+                redacted[k] = sanitize_for_logging(v)
+        return redacted
+    if isinstance(value, list):
+        return [sanitize_for_logging(item) for item in value]
+    if isinstance(value, str):
+        if SECRET_PATTERN.search(value):
+            return "[REDACTED]"
+        return value
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
@@ -637,7 +660,8 @@ def main():
             except (BoundaryError, merge.APIError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
                 report = {"outcome": "blocked", "reason": str(exc) if isinstance(exc,BoundaryError) else type(exc).__name__}
                 ledger.record(report)
-            text = json.dumps(report, indent=2)
+            safe_report = sanitize_for_logging(report)
+            text = json.dumps(safe_report, indent=2)
             print(text, flush=True)
             if args.report:
                 args.report.write_text(text + "\n")
