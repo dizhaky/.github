@@ -27,7 +27,7 @@ def pr(**overrides):
     return value
 
 
-GREEN = [{"name": "test", "status": "completed", "conclusion": "success"}]
+GREEN = [{"name": "test", "status": "completed", "conclusion": "success", "app": {"id": 1}}]
 
 
 @pytest.mark.parametrize("overrides,reason", [
@@ -82,9 +82,9 @@ class FakeAPI:
         self.snapshots = [pr(), pr()]
         self.checks = [copy.deepcopy(GREEN), copy.deepcopy(GREEN)]
         self.labels = []
-        self.head_repo = {"full_name": "JHJ-Corp/example"}
+        self.head_repo = {"full_name": "dizhaky/example"}
         self.author_association = "OWNER"
-        self.repos = [{"full_name": "JHJ-Corp/example", "archived": False,
+        self.repos = [{"full_name": "dizhaky/example", "archived": False,
                        "disabled": False, "permissions": {"admin": True}}]
         self.repo = {**self.repos[0], "allow_auto_merge": False, "allow_squash_merge": True}
 
@@ -92,6 +92,10 @@ class FakeAPI:
         if method != "GET":
             self.actions.append((method, path, body))
             return {**self.repo, **body}
+        if path == "user":
+            return {"login": "dizhaky"}
+        if path == "repos/dizhaky/.github/commits/main":
+            return {"sha": "c" * 40}
         if path.startswith("user/repos?"):
             assert paginate
             return copy.deepcopy(self.repos)
@@ -103,6 +107,9 @@ class FakeAPI:
             return [{"check_runs": self.checks.pop(0)}]
         if path.endswith("statuses?per_page=100"):
             assert paginate
+            digest = module.hashlib.sha256(json.dumps({"reviews":[],"comments":[],"threads":[]},sort_keys=True).encode()).hexdigest()
+            return [{"context": module.AI_CONTEXT, "state": "success", "created_at":"2026-10-02T23:00:00Z", "creator": {"login": "dizhaky"}, "target_url": "https://github.com/dizhaky/.github/commit/" + "c" * 40, "description": "AI verified receipt:" + digest + " worker:" + "c" * 40}]
+        if path.endswith("/reviews?per_page=100") or path.endswith("/comments?per_page=100"):
             return []
         if "/rules/branches/" in path:
             assert paginate
@@ -115,16 +122,19 @@ class FakeAPI:
     def pull_request(self, repo, number):
         return self.snapshots.pop(0)
 
+    def threads(self,repo,number):
+        return []
+
     def merge(self, repo, number, method, head, disable=False):
         self.actions.append(("disable" if disable else "merge", repo, number, method, head))
 
 
-def test_repairs_new_org_repo_and_merges_without_author_filter():
+def test_reporter_never_mutates_settings_or_enrollment_even_with_apply():
     api = FakeAPI()
     result = module.reconcile(api, apply=True)
     assert result["errors"] == 0
-    assert api.actions == [("PATCH", "repos/JHJ-Corp/example", {"allow_auto_merge": True, "delete_branch_on_merge": True}),
-                           ("merge", "JHJ-Corp/example", 1, "squash", "a" * 40)]
+    assert api.actions == []
+    assert result["writerMode"]=="reporter" and result["pull_requests"][0]["outcome"]=="eligible_for_ai_controller"
 
 
 def test_dry_run_does_not_mutate():
@@ -155,12 +165,12 @@ def test_late_failed_check_does_not_merge():
     assert not any(a[0] == "merge" for a in api.actions)
 
 
-def test_label_hold_disables_existing_native_auto_merge():
+def test_label_hold_reports_existing_native_request_to_single_writer():
     api = FakeAPI()
     api.labels = ["do-not-merge"]
     api.snapshots[0]["autoMergeRequest"] = {"enabledAt": "now"}
     module.reconcile(api, apply=True)
-    assert any(a[0] == "disable" for a in api.actions)
+    assert api.actions==[]
     assert not any(a[0] == "merge" for a in api.actions)
 
 
@@ -277,19 +287,19 @@ def test_label_added_during_checks_prevents_merge():
 
 
 @pytest.mark.parametrize("auto_merge,delete_branch", [(True, False), (False, True), (False, False), (True, True)])
-def test_repairs_only_drifted_repository_settings(auto_merge, delete_branch):
+def test_reports_drifted_settings_without_writing(auto_merge, delete_branch):
     api = FakeAPI()
     api.repo.update(allow_auto_merge=auto_merge, delete_branch_on_merge=delete_branch)
     result = module.reconcile(api, apply=True)
     expected = {field: True for field, enabled in (
         ("allow_auto_merge", auto_merge), ("delete_branch_on_merge", delete_branch),
     ) if not enabled}
-    patches = [action for action in api.actions if action[0] == "PATCH"]
-    assert patches == ([("PATCH", "repos/JHJ-Corp/example", expected)] if expected else [])
+    assert api.actions==[]
+    assert result["repositories"][0]["setting"]==("would_enable" if expected else "already_enabled")
     assert result["errors"] == 0
 
 
-def test_delete_branch_setting_failure_is_visible():
+def test_reporter_cannot_attempt_delete_branch_setting_write():
     api = FakeAPI()
     api.repo.update(allow_auto_merge=True, delete_branch_on_merge=False)
     rest = api.rest
@@ -302,7 +312,7 @@ def test_delete_branch_setting_failure_is_visible():
 
     api.rest = refuse_setting
     result = module.reconcile(api, apply=True)
-    assert result["errors"] == 1
+    assert result["errors"] == 0 and api.actions==[]
     assert not any(action[0] == "merge" for action in api.actions)
 
 
@@ -317,13 +327,13 @@ def test_external_fork_cannot_self_certify_ci(association):
 
 
 @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
-def test_trusted_maintainer_fork_can_merge_after_ci(association):
+def test_trusted_maintainer_fork_is_reported_without_enrollment(association):
     api = FakeAPI()
     api.head_repo = {"full_name": "maintainer/example"}
     api.author_association = association
     result = module.reconcile(api, apply=True)
     assert result["errors"] == 0
-    assert any(action[0] == "merge" for action in api.actions)
+    assert api.actions==[] and result["pull_requests"][0]["outcome"]=="eligible_for_ai_controller"
 
 
 @pytest.mark.parametrize("head_repo", [None, {}, {"full_name": ""}])
@@ -339,15 +349,15 @@ def test_same_repo_branch_does_not_need_author_association():
     api = FakeAPI()
     api.author_association = "NONE"
     module.reconcile(api, apply=True)
-    assert any(action[0] == "merge" for action in api.actions)
+    assert api.actions==[]
 
 
-def test_untrusted_fork_existing_enrollment_is_disabled():
+def test_untrusted_fork_existing_enrollment_is_reported_to_single_writer():
     api = FakeAPI()
     api.head_repo = {"full_name": "outsider/example"}
     api.author_association = "NONE"
     api.snapshots[0]["autoMergeRequest"] = {"enabledAt": "2026-09-07T00:00:00Z"}
     result = module.reconcile(api, apply=True)
-    assert result["pull_requests"][0]["outcome"] == "disabled"
-    assert any(action[0] == "disable" for action in api.actions)
+    assert result["pull_requests"][0]["outcome"] == "held_for_ai_controller"
+    assert api.actions==[]
     assert not any(action[0] == "merge" for action in api.actions)

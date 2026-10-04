@@ -1,6 +1,5 @@
 # Copy to repos/<name>/.github/workflows/dependabot-auto-merge.yml
-# Auto-merge safe Dependabot PRs (github-actions bumps only).
-# Requires: branch protection allows auto-merge OR admin bypass.
+# Read-only reporter; the authenticated AI controller owns native enrollment.
 name: Dependabot Auto-Merge
 
 on:
@@ -8,44 +7,28 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
+
+# Cancel superseded runs of the same PR (new push = old run is moot); pushes
+# to main and scheduled runs are never cancelled. Cuts load on the MFC3 runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 
 jobs:
-  auto-merge:
-    if: github.actor == 'dependabot[bot]'
+  report:
+    if: github.repository_owner == 'dizhaky'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Dependabot metadata
-        id: meta
-        uses: dependabot/fetch-metadata@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # fetch-metadata emits `github_actions` (underscore), not `github-actions`.
-      # The hyphenated form never matched, so this step silently no-op'd while
-      # the job still reported success.
-      - name: Auto-merge github-actions bumps
-        if: steps.meta.outputs.package-ecosystem == 'github_actions' && (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor')
-        # `gh pr merge` resolves the target repo from the local git remote, and
-        # this job has no checkout — pass -R explicitly instead of cloning.
-        run: |
-          pkg="${{ steps.meta.outputs.dependency-names }}"
-          if echo "$pkg" | grep -qiE 'actions/|docker/|pnpm/action|hashicorp/|astral-sh/'; then
-            gh pr merge --auto --squash -R "${{ github.repository }}" "${{ github.event.pull_request.number }}"
-          else
-            echo "Skipping auto-merge for: $pkg"
-          fi
+      - name: Report PR state to the sole AI delivery controller
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # A skipped merge step is invisible in the checks UI (the job goes green
-      # either way). Log the reason so the next ecosystem-name mismatch is
-      # visible in the run without diffing workflow YAML.
-      - name: Report skipped auto-merge
-        if: steps.meta.outputs.package-ecosystem != 'github_actions' || (steps.meta.outputs.update-type != 'version-update:semver-patch' && steps.meta.outputs.update-type != 'version-update:semver-minor')
+          GH_TOKEN: ${{ github.token }}
+          DELIVERY_REPOSITORY: ${{ github.repository }}
         run: |
-          echo "Auto-merge not attempted for PR #${{ github.event.pull_request.number }}"
-          echo "  package-ecosystem: '${{ steps.meta.outputs.package-ecosystem }}' (auto-merge covers 'github_actions')"
-          echo "  update-type:       '${{ steps.meta.outputs.update-type }}' (auto-merge covers semver-patch/minor)"
-          echo "Leaving PR open for manual review."
+          gh api --paginate --slurp \
+            "repos/$DELIVERY_REPOSITORY/pulls?state=open&per_page=100" \
+            --jq '[.[][] | {number, draft, head: .head.sha, nativeQueueArmed: (.auto_merge != null)}]'
+          echo 'Native enrollment is owned by the authenticated AI delivery controller.'

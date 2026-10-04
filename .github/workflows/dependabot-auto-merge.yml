@@ -8,8 +8,8 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 # Cancel superseded runs of the same PR (new push = old run is moot); pushes
 # to main and scheduled runs are never cancelled. Cuts load on the MFC3 runner.
@@ -17,24 +17,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+
 jobs:
-  auto-merge:
-    if: github.actor == 'dependabot[bot]'
+  report:
+    if: github.repository_owner == 'dizhaky'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Dependabot metadata
-        id: meta
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Auto-merge patch/minor bumps
-        if: >
-          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'
-        run: >-
-          gh pr merge --auto --squash
-          --repo "${REPO}" "${PR_NUMBER}"
+      - name: Report PR state to the sole AI delivery controller
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          DELIVERY_REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/$DELIVERY_REPOSITORY/pulls?state=open&per_page=100" \
+            --jq '[.[][] | {number, draft, head: .head.sha, nativeQueueArmed: (.auto_merge != null)}]'
+          echo 'Native enrollment is owned by the authenticated AI delivery controller.'

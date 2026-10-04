@@ -52,8 +52,11 @@ Required checks on `main`: `test` and `scan / gitleaks`. This repo is public, so
 
 ## Global auto-merge reconciliation
 
-- `global-auto-merge.yml` reconciles active admin repositories every 15 minutes, including organization repositories and new repositories. It uses `AUTO_MERGE_PAT` or `GH_PAT`, runs trusted default-branch code only, and evaluates all authors.
-- It never bypasses branch protection: named required checks plus current green CI are mandatory; unprotected/no-required-check branches and explicit holds are reported as skipped. Details and read-only preview: `docs/global-auto-merge.md`.
+- Default delivery policy (Dan, 2026-09-07): completed trusted harness work runs verification, merges to `main` through normal protected merging, cleans eligible merged remote branches, and verifies backend completion without asking Dan for code review or routine approval. Preserve CI, signing, conflict, security and review-resolution gates; resolve findings through the harness instead of bypassing them. Never discard dirty or unmerged local work.
+
+- `global-auto-merge.yml` reports active personal owned/administered repositories every 30 minutes using trusted default-branch code and existing authentication. It cannot change settings or enroll PRs; organization repositories are excluded. Repository general/Dependabot workflows and templates are also read-only reporters.
+- `scripts/ai_delivery.py` is the sole AI enrollment writer: bounded tool-free proposals, protected paths, hardened Git, no-force repair commits honoring configured/native signing, including verified GitHub CAS signing when natively required and local signing is disabled, actual new-head native CI, authoritative required reviews, renewable executor leases and fresh owner-created commit-status receipts. Drafts, holds and absent required CI stay held. Never execute PR scripts on the credentialed host. `scripts/launch_ai_delivery.py` verifies protected default source before each fresh single-cycle process; the prepared bootstrap installs outside Documents. See `docs/ai-delivery.md` for runtime and release gates.
+- Complete contained workflow/controller evidence is readable as untrusted data; generated CI/governance/instruction writes and package test-control changes remain forbidden. Missing, incomplete or oversized evidence holds rather than truncates. Native API token fields never enter receipts. The AI receipt gates controller enrollment without changing native protections; retire other writers before activation.
 
 ## Required secret-scan callers
 
