@@ -660,11 +660,13 @@ def main():
             except (BoundaryError, merge.APIError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
                 report = {"outcome": "blocked", "reason": str(exc) if isinstance(exc,BoundaryError) else type(exc).__name__}
                 ledger.record(report)
-            safe_report = sanitize_for_logging(report)
-            text = json.dumps(safe_report, indent=2)
-            print(text, flush=True)
+            # Stdout is a log. Do not print the cycle report: it carries
+            # GitHub payloads, and CodeQL treats that print as clear-text
+            # logging even after key redaction.
+            print("delivery_cycle_complete", flush=True)
             if args.report:
-                args.report.write_text(text + "\n")
+                safe_report = sanitize_for_logging(report)
+                args.report.write_text(json.dumps(safe_report, indent=2) + "\n")
             if not args.daemon:
                 return
             time.sleep(args.poll_seconds)

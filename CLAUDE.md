@@ -1,6 +1,6 @@
-# .github
+@AGENTS.md
 
-> **Purpose:** Central GitHub templates, reusable workflows, and account hygiene
+Tests pin these strings here (`tests/test_review_runbook.py`, `tests/test_reusable_workflows.py`):
 
 ## Stack
 

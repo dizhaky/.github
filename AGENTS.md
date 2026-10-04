@@ -1,6 +1,16 @@
 # .github — Agent context
 
-> **Purpose:** Central GitHub templates, reusable workflows, and account hygiene
+> **Purpose:** Central GitHub templates, reusable workflows, and account hygiene. Public repo: keep everything here safe for public view.
+
+Fleet policy: ~/Dev/dotfiles/rules/CODING-RULES.md + LINEAR-WORKFLOW.md (loaded globally).
+
+## Fleet essentials (cloud sessions)
+
+Cloud/web sessions here do not load the global rules, so the essentials are:
+
+- Work autonomously to completion; confirm before destructive or irreversible actions (delete, overwrite, force-push, credential changes, spending, external sends).
+- Every change goes branch → PR → required checks green → squash-merge. Never push to `main`, never `--admin`, never bypass checks.
+- Linear (team DAN) is the system of record for non-trivial work.
 
 ## Stack
 
@@ -10,46 +20,35 @@ GitHub Actions, Python rollout scripts
 
 | Action | Command |
 |--------|---------|
-| Install | `n/a` |
+| Install | `python3 -m pip install "pytest>=8,<10"` |
 | Run | `gh workflow run nightly-health-check.yml -R dizhaky/.github` |
 | Test | `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests` |
-| Lint | `n/a` |
+| Lint | `actionlint .github/workflows/<file>.yml` |
 
-## Tooling
+Template tests need pytest for import-time isolation and disposable child-process probes. CI runs pytest on pushes and PRs.
 
-- **Cursor rules:** `.cursor/rules/karpathy-four-rules.mdc` — required always-on Karpathy four rules ([canonical](https://github.com/dizhaky/.github/blob/main/docs/KARPATHY-RULES.md)); install: `~/Dev/dotfiles/cursor/bin/install-karpathy-repo-rules.sh`
-- **Test Isolation:** All test suites follow the [Test-Suite Isolation Standard](docs/TEST-ISOLATION.md) ([canonical](https://github.com/dizhaky/.github/blob/main/docs/TEST-ISOLATION.md))
-- **Skills:** Repo-specific skills in `.cursor/skills/` or user-level `~/.cursor/skills-cursor/`
-- **MCP:** Configure per project; never log tokens or credentials
+## CI
 
-## Documentation duty
+Required checks on `main`: `test` and `scan / gitleaks`. This repo is public, so its own jobs stay on GitHub-hosted `ubuntu-latest` and no self-hosted runner is registered here.
 
-Before finishing any non-trivial session:
+## Self-hosted runner policy (DAN-4030)
 
-1. **System log** — Append to `docs/system-log/YYYY-MM-DD.md` (UTC timestamp, agent/tool, repos touched, summary, commits/PRs, follow-ups).
-2. **Agent files** — Update `CLAUDE.md` and/or this file if commands, architecture, CI, security, or gotchas changed.
-3. **Obsidian** — For cross-repo or operational work, update `Projects/Tech/<topic>/` and link from [[Projects/Tech/github-ops/RUNBOOKS|GitHub Ops Runbooks]].
-4. **No secrets** in logs or markdown.
+- Reusable workflows (`reusable-ci.yml`, `reusable-nightly-maintenance.yml`, `reusable-scan-failure-alert.yml`, `reusable-secret-scan.yml`) accept a `runner` input which defaults to `'"ubuntu-latest"'`.
+- Repositories migrated to the self-hosted MFC3 runner (ci-runner-1, `DAN-4030`) explicitly pass `runner: '["self-hosted", "linux", "x64", "hetzner"]'` (or equivalent labels).
+- Public repositories or repos without registered self-hosted runners omit `runner` to use GitHub-hosted `ubuntu-latest` without risk of sitting queued indefinitely.
 
-Skip only for typo-only or comment-only edits.
+## Canonical docs hosted here
 
-## References
-
-- Test-Suite Isolation Standard: [TEST-ISOLATION.md](docs/TEST-ISOLATION.md) ([canonical](https://github.com/dizhaky/.github/blob/main/docs/TEST-ISOLATION.md))
-- Unified Gateway Cookbook: [dotfiles canonical copy](https://github.com/dizhaky/dotfiles/blob/main/.claude/refs/UNIFIED-GATEWAY-COOKBOOK.md)
-- System log format: `docs/system-log/README.md`
-- Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=obsidian-vault&file=Projects/Tech/GitHub%20Ops/01_Reference/RUNBOOKS)
-- Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=obsidian-vault&file=Projects/Tech/Agent%20Documentation/01_Reference/STANDARDS)
-- Central templates: [dizhaky/.github](https://github.com/dizhaky/.github)
+- `docs/KARPATHY-RULES.md` is the canonical Karpathy rules file other repos link to. Never move or rename it.
+- Test-Suite Isolation Standard: [TEST-ISOLATION.md](docs/TEST-ISOLATION.md) ([canonical](https://github.com/dizhaky/.github/blob/main/docs/TEST-ISOLATION.md)); all test suites follow it.
+- System log format: `docs/system-log/README.md`. Repo templates seeded by `scripts/rollout-docs.py` live in `.github/repo-templates/`.
 
 ## GitHub-native review capture
 
-- `.github/workflows/post-merge-review-capture.yml` records late reviews as GitHub issues using `GITHUB_TOKEN`, without Hermes or webhook secrets. It does not enable hosted automatic Code Review or change merge gates.
+- `.github/workflows/post-merge-review-capture.yml` records late reviews as GitHub issues using `GITHUB_TOKEN`, without webhook secrets. It does not enable hosted automatic Code Review or change merge gates.
 - Supported review authors include Codex, Greptile (`greptile-apps[bot]`), Copilot, and GitHub Actions; reviewer identity is fetched from GitHub rather than trusted from the artifact.
 - Requires Issues enabled and `issues: write`; skipped author replies, pre-merge reviews, and PRs that close or are titled/branched as a prior capture follow-up do not create issues. Lookup failures fail closed rather than creating duplicates.
-- Tests: `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests`; syntax: `actionlint .github/workflows/post-merge-review-capture.yml`.
-
-- Template tests require pytest (`python3 -m pip install "pytest>=8,<10"`) for import-time isolation and disposable child-process probes. CI runs pytest on pushes and PRs.
+- Syntax check: `actionlint .github/workflows/post-merge-review-capture.yml`.
 
 ## Global auto-merge reconciliation
 
@@ -64,8 +63,20 @@ Skip only for typo-only or comment-only edits.
 - Pin `.github/repo-templates/secret-scan.yml` to a reviewed full commit SHA of the reusable scanner. Update the pin deliberately after verification; do not use a moving branch reference for a required security check.
 - Include the `edited` pull-request activity alongside opened/synchronize/reopened so base-branch retargeting produces a fresh diff scan.
 
-## Self-hosted runner policy (DAN-4030)
+## Documentation duty
 
-- Reusable workflows (`reusable-ci.yml`, `reusable-nightly-maintenance.yml`, `reusable-scan-failure-alert.yml`, `reusable-secret-scan.yml`) accept a `runner` input which defaults to `'"ubuntu-latest"'`.
-- Repositories migrated to the Hetzner self-hosted runner infrastructure (MFC3 / ci-runner-1, `DAN-4030`) explicitly pass `runner: '["self-hosted", "linux", "x64", "hetzner"]'` (or equivalent labels).
-- Public repositories or repos without registered self-hosted runners omit `runner` to use GitHub-hosted `ubuntu-latest` without risk of sitting queued indefinitely.
+Before finishing any non-trivial session:
+
+1. **System log** — Append to `docs/system-log/YYYY-MM-DD.md` (Eastern ISO-8601 timestamp with `-04:00`/`-05:00`, agent/tool, repos touched, summary, commits/PRs, follow-ups). Never rewrite existing entries.
+2. **Agent files** — Update this file if commands, architecture, CI, security, or gotchas changed.
+3. **Obsidian** — For cross-repo or operational work, update `Projects/Tech/<topic>/` and link from [[Projects/Tech/GitHub Ops/Reference/RUNBOOKS|GitHub Ops Runbooks]].
+4. **No secrets** in logs or markdown. Redact tokens and credential paths.
+
+Skip only for typo-only or comment-only edits.
+
+## References
+
+- Unified Gateway Cookbook: [dotfiles canonical copy](https://github.com/dizhaky/dotfiles/blob/main/.claude/refs/UNIFIED-GATEWAY-COOKBOOK.md)
+- Account runbooks: [Obsidian — GitHub Ops Runbooks](obsidian://open?vault=obsidian-vault&file=Projects/Tech/GitHub%20Ops/Reference/RUNBOOKS)
+- Standards: [Obsidian — Agent Documentation Standards](obsidian://open?vault=obsidian-vault&file=Projects/Tech/Agent%20Documentation/Reference/STANDARDS)
+- Central templates: [dizhaky/.github](https://github.com/dizhaky/.github)
