@@ -30,9 +30,9 @@ class ReviewRunbookTest(unittest.TestCase):
         self.assertIn("every ancestor directory", section)
 
     def test_primary_commands_and_ci_use_pytest_isolation(self):
-        claude = (ROOT / "CLAUDE.md").read_text()
+        agents = (ROOT / "AGENTS.md").read_text()
         workflow = (ROOT / ".github/workflows/template-tests.yml").read_text()
-        self.assertIn('PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests', claude)
+        self.assertIn('PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests', agents)
         self.assertIn("python -m pytest -q tests", workflow)
         self.assertTrue((ROOT / "tests/conftest.py").is_file())
 
