@@ -25,6 +25,5 @@ def test_reusable_workflow_runner_defaults():
 
 def test_agent_documentation_records_runner_policy():
     agents_md = (REPO_ROOT / "AGENTS.md").read_text()
-    claude_md = (REPO_ROOT / "CLAUDE.md").read_text()
     assert "Self-hosted runner policy" in agents_md or "DAN-4030" in agents_md
-    assert "Self-hosted runner policy" in claude_md or "DAN-4030" in claude_md
+    assert (REPO_ROOT / "CLAUDE.md").read_text() == "@AGENTS.md\n"
