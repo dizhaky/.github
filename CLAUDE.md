@@ -34,7 +34,7 @@ GitHub Actions, Python rollout scripts
 
 Before finishing any non-trivial session:
 
-1. **System log** — Append to `docs/system-log/YYYY-MM-DD.md` (UTC timestamp, repos touched, summary, commits/PRs, follow-ups).
+1. **System log** — Append to `docs/system-log/YYYY-MM-DD.md` (Eastern ISO-8601 timestamp with `-04:00`/`-05:00` offset, repos touched, summary, commits/PRs, follow-ups).
 2. **Agent files** — Update `CLAUDE.md` and/or `AGENTS.md` if commands, architecture, CI, security, or gotchas changed.
 3. **Obsidian** — For cross-repo or operational work, update a note under `Projects/Tech/` and link from [[Projects/Tech/github-ops/RUNBOOKS|GitHub Ops Runbooks]].
 4. **No secrets** in logs or markdown.

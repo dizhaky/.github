@@ -23,7 +23,7 @@ Append-only daily log of agent and automation activity in this repo.
 
 1. **Append only** — do not edit or delete prior entries except to redact secrets
 2. **No secrets** — redact tokens, API keys, passwords, and credential file paths
-3. **Eastern timestamps** — ISO-8601 with an explicit offset (`-04:00` EDT, `-05:00` EST; America/New_York); older `Z` entries stay as written
+3. **Eastern timestamps with an explicit offset** — new entries use `America/New_York` (DST-aware) as ISO-8601 with `-04:00` (EDT) or `-05:00` (EST), e.g. `2026-10-01T09:30:00-04:00`; no `Z` suffix and no bare `EDT`. Earlier entries stay as written (rule 1). Technical UTC stays UTC: GitHub API timestamps, cron expressions, tool-consumed log formats, token expiry
 4. **One session, one entry** — merge related work from the same session into a single entry
 
 ## When to log
