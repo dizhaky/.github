@@ -27,8 +27,13 @@ def source_revision(api):
     head=native["commit"]["sha"]
     if not native.get("protected") or not re.fullmatch(r"[0-9a-f]{40}",head):
         raise BoundaryError("source_default_branch_unprotected")
-    protection=api.rest(f"repos/{repo}/branches/{quote(branch,safe='')}/protection")
-    required=protection.get("required_status_checks") or {}
+    try:
+        protection=api.rest(f"repos/{repo}/branches/{quote(branch,safe='')}/protection")
+    except merge.APIError:
+        # Ruleset-only branch protection answers 404 on the classic endpoint;
+        # the ruleset query below still carries the required checks.
+        protection=None
+    required=(protection or {}).get("required_status_checks") or {}
     rules=api.rest(f"repos/{repo}/rules/branches/{quote(branch,safe='')}?per_page=100",paginate=True)
     checks=[row for page in api.rest(f"repos/{repo}/commits/{head}/check-runs?filter=latest&per_page=100",paginate=True) for row in page["check_runs"] if row["name"]!=AI_CONTEXT]
     statuses=[row for row in api.rest(f"repos/{repo}/commits/{head}/statuses?per_page=100",paginate=True) if row["context"]!=AI_CONTEXT]
@@ -92,7 +97,17 @@ def launch(api,state,checkouts,logs,report,*,budget=3,runner=run_controller):
     if target.is_symlink() or run_git(target,"rev-parse","HEAD")!=head or run_git(target,"status","--porcelain") or run_git(target,"remote","get-url","origin")!=f"https://github.com/{repo}.git":
         raise BoundaryError("source_checkout_not_exact_clean_owned")
     if source_revision(api)!=(repo,branch,head):raise BoundaryError("source_changed_before_exec")
-    for name in ("scripts/ai_delivery.py","scripts/ai-delivery-policy.json"):
+    # The controller imports its helpers and the policy lease command executes
+    # further scripts from this same checkout; every one is a validated file.
+    names=["scripts/ai_delivery.py","scripts/ai_proposal.py","scripts/global_auto_merge.py","scripts/read_ownership_feed.py","scripts/ai-delivery-policy.json"]
+    try:
+        command=json.loads((target/"scripts/ai-delivery-policy.json").read_text()).get("leaseCommand") or []
+    except (OSError,ValueError):
+        raise BoundaryError("controller_not_deployed_as_regular_trusted_files") from None
+    if not isinstance(command,list) or not all(isinstance(value,str) for value in command):
+        raise BoundaryError("controller_not_deployed_as_regular_trusted_files")
+    names+= [value for value in command if re.fullmatch(r"scripts/[A-Za-z0-9._/-]+\.py",value)]
+    for name in names:
         entry=target/name
         if not entry.is_file() or not entry.resolve().is_relative_to(target.resolve()) or entry.is_symlink() or entry.parent.is_symlink():
             raise BoundaryError("controller_not_deployed_as_regular_trusted_files")

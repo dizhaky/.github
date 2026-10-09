@@ -52,8 +52,9 @@ def test_atomic_exact_checkout_and_second_native_verification(tmp_path,monkeypat
         calls.append(args)
         if args[0]=="clone":
             candidate=Path(args[-1]);(candidate/"scripts").mkdir(parents=True)
-            (candidate/"scripts/ai_delivery.py").write_text("trusted")
-            (candidate/"scripts/ai-delivery-policy.json").write_text("{}")
+            for name in ("scripts/ai_delivery.py","scripts/ai_proposal.py","scripts/global_auto_merge.py","scripts/read_ownership_feed.py"):
+                (candidate/name).write_text("trusted")
+            (candidate/"scripts/ai-delivery-policy.json").write_text('{"leaseCommand": ["python3", "scripts/read_ownership_feed.py"]}')
         if args==("rev-parse","HEAD"):return HEAD
         if args==("status","--porcelain"):return " M scripts/ai_delivery.py" if problem=="dirty" else ""
         if args==("remote","get-url","origin"):return "https://github.com/outsider/.github.git" if problem=="foreign_remote" else "https://github.com/dizhaky/.github.git"
@@ -72,6 +73,36 @@ def test_atomic_exact_checkout_and_second_native_verification(tmp_path,monkeypat
         assert "--apply" in command and "--daemon" not in command
         assert ("checkout","--detach",HEAD) in calls
         assert all(not word.startswith(("--force","--admin")) for call in calls for word in call)
+
+
+@pytest.mark.parametrize("helper",["scripts/ai_proposal.py","scripts/global_auto_merge.py","scripts/read_ownership_feed.py"])
+def test_imported_helpers_and_lease_scripts_must_be_regular_trusted_files(tmp_path,monkeypatch,helper):
+    executions=[]
+    def git(root,*args):
+        if args[0]=="clone":
+            candidate=Path(args[-1]);(candidate/"scripts").mkdir(parents=True)
+            for name in ("scripts/ai_delivery.py","scripts/ai_proposal.py","scripts/global_auto_merge.py","scripts/read_ownership_feed.py"):
+                if name==helper:(candidate/name).symlink_to(candidate/"scripts/ai_delivery.py")
+                else:(candidate/name).write_text("trusted")
+            (candidate/"scripts/ai-delivery-policy.json").write_text('{"leaseCommand": ["python3", "scripts/read_ownership_feed.py"]}')
+        if args==("rev-parse","HEAD"):return HEAD
+        if args==("status","--porcelain"):return ""
+        if args==("remote","get-url","origin"):return "https://github.com/dizhaky/.github.git"
+        return ""
+    monkeypatch.setattr(launch,"run_git",git)
+    args=(API(),tmp_path/"state",tmp_path/"checkouts",tmp_path/"logs",tmp_path/"report.json")
+    with pytest.raises(BoundaryError,match="controller_not_deployed"):launch.launch(*args,runner=lambda command,**kw:executions.append(1) or SimpleNamespace(returncode=0))
+    assert executions==[]
+
+
+def test_ruleset_only_branch_protection_does_not_abort_the_launcher(tmp_path,monkeypatch):
+    class RulesetOnly(API):
+        def rest(self,path,**kwargs):
+            if path.endswith("/protection"):raise launch.merge.APIError("branch protection 404")
+            if "/rules/branches/" in path:
+                return [{"id":1,"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI","integration_id":15368}]}}]
+            return super().rest(path,**kwargs)
+    assert launch.source_revision(RulesetOnly())==("dizhaky/.github","main",HEAD)
 
 
 def test_log_rotation_leaves_permanent_receipts_untouched(tmp_path):
