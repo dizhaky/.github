@@ -613,7 +613,9 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         if not result.get("merged") and not result.get("auto_merge"):
             raise BoundaryError("native_enrollment_not_verified")
         return {**receipt, "outcome": "verified", "nativeState": "merged" if result.get("merged") else "queued", "verifiedHead": head}
-    except (BoundaryError, merge.APIError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+    # OSError (e.g. a filesystem race a model proposal triggers) blocks one PR
+    # as a visible receipt instead of crashing the whole delivery cycle.
+    except (BoundaryError, merge.APIError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired, OSError) as exc:
         return {**receipt, "outcome": "blocked", "reason": str(exc) if isinstance(exc, BoundaryError) else type(exc).__name__,
                 **({"backendEvidence":exc.evidence} if isinstance(exc,BoundaryError) and exc.evidence else {})}
     finally:

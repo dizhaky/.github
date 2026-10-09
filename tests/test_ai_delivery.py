@@ -77,6 +77,20 @@ def test_duplicate_and_secret_patches_are_rejected(tmp_path):
         proposal.apply_patches(tmp_path,[{**row,"content":"ghp_"+"x"*30}])
 
 
+def test_filesystem_boundary_error_blocks_one_pr_not_the_cycle(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    def git(root,*args):
+        if args[0]=="clone":
+            clone=Path(args[-1]);clone.mkdir();(clone/"a.py").write_text("value=1\n")
+        if args==("rev-parse","HEAD"):return "c"*40 if root==ROOT else "b"*40
+        return ""
+    monkeypatch.setattr(delivery,"run_git",git)
+    repair=clean(verdict="repair",patches=[{"path":"a.py/nested.py","original_sha256":None,"content":"x"}])
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:repair)
+    assert result["outcome"]=="blocked" and result["reason"]=="FileExistsError"
+    assert api.actions==[("status","pending","a"*40)]
+
+
 def test_attempt_budget_and_durable_receipt_survive_restart(tmp_path,monkeypatch):
     ledger=delivery.Ledger(tmp_path)
     assert ledger.reserve("dizhaky/example",1,"a")
