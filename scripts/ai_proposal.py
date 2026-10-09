@@ -39,7 +39,13 @@ FORBIDDEN = (".git", ".codex", ".claude", ".agents", ".github", ".circleci", ".h
 SECRET_DIRS = (".git", ".codex", ".claude", ".agents", ".ssh", ".gnupg", "secrets")
 PROTECTED_NAMES = {name.casefold() for name in {"AGENTS.md", "CLAUDE.md", "GATES.md", "ai-delivery-policy.json", "ai_delivery.py", "ai_proposal.py", "global_auto_merge.py", "verify_ai_receipt.py", "read_ownership_feed.py", "launch_ai_delivery.py", "TEST-ISOLATION.md", ".gitattributes", ".gitmodules", ".gitlab-ci.yml", "Jenkinsfile", "CODEOWNERS", "SECURITY.md", ".npmrc"}}
 TEST_CONTROL_NAMES = {"pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg", ".coveragerc", "conftest.py", ".nycrc", ".nycrc.json", ".c8rc", ".c8rc.json", ".mocharc.json", ".mocharc.yml", ".mocharc.yaml"}
-SECRET_PATTERN = re.compile(r"(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})")
+SECRET_PATTERN = re.compile(
+    r"(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}"
+    r"|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35}|glpat-[A-Za-z0-9_\-]{20,}"
+    r"|xox[a-z]-[0-9A-Za-z-]{10,}|npm_[A-Za-z0-9]{36}"
+    r"|-{5}BEGIN [A-Z0-9 ]*PRIVATE KEY-{5}"
+    r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"
+)
 
 
 def clean_environment(*, engine=False, state_dir=None):
@@ -201,7 +207,7 @@ def preserve_test_controls(name,original,content):
             before=tomllib.loads(original.decode()) if original is not None else {}
             after=tomllib.loads(content.decode())
             before=before.get("tool",{});after=after.get("tool",{})
-            keys={"pytest","coverage","ruff","mypy","black","bandit","hatch"}
+            keys={"pytest","coverage","ruff","mypy","black","bandit","hatch","pdm","tox","tox4","nox","taskipy","invoke","doit"}
             old_poetry=before.get("poetry",{});new_poetry=after.get("poetry",{})
             if not isinstance(old_poetry,dict) or not isinstance(new_poetry,dict):raise ValueError()
             if ("scripts" in old_poetry,old_poetry.get("scripts"))!=("scripts" in new_poetry,new_poetry.get("scripts")):
@@ -224,6 +230,10 @@ def apply_patches(root, patches):
         if patch["path"].casefold() in names or not isinstance(patch["content"], str):
             raise BoundaryError("duplicate_or_invalid_patch")
         names.add(patch["path"].casefold())
+        # An existing directory or other non-regular target would crash on
+        # write; reject it as a boundary error, not an OSError.
+        if target.exists() and not target.is_file():
+            raise BoundaryError("patch_target_not_regular_file")
         original = target.read_bytes() if target.is_file() else None
         actual = hashlib.sha256(original).hexdigest() if original is not None else None
         if actual != patch["original_sha256"]:
