@@ -39,21 +39,25 @@ class Ledger:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(self.root / "state.sqlite3")
-        self.db.execute("CREATE TABLE IF NOT EXISTS jobs (repo TEXT, number INT, head TEXT, attempts INT, updated REAL, outcome TEXT, PRIMARY KEY(repo, number, head))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS jobs (repo TEXT, number INT, head TEXT, attempts INT, updated REAL, outcome TEXT, worker TEXT, PRIMARY KEY(repo, number, head))")
+        if "worker" not in {row[1] for row in self.db.execute("PRAGMA table_info(jobs)")}:
+            self.db.execute("ALTER TABLE jobs ADD COLUMN worker TEXT")
         self.db.execute("CREATE TABLE IF NOT EXISTS receipts (id INTEGER PRIMARY KEY, created TEXT, payload TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS cursor (repo TEXT, number INT, seen REAL, PRIMARY KEY(repo,number))")
         self.db.execute("CREATE TABLE IF NOT EXISTS review_evidence (repo TEXT, number INT, head TEXT, fingerprint TEXT, PRIMARY KEY(repo,number,head))")
         self.db.commit()
 
-    def reserve(self, repo, number, head, *, limit=2, cooldown=900, reopen=False):
+    def reserve(self, repo, number, head, *, limit=2, cooldown=900, reopen=False, worker=None):
         self.db.execute("BEGIN IMMEDIATE")
-        row = self.db.execute("SELECT attempts, updated, outcome FROM jobs WHERE repo=? AND number=? AND head=?", (repo, number, head)).fetchone()
+        row = self.db.execute("SELECT attempts, updated, outcome, worker FROM jobs WHERE repo=? AND number=? AND head=?", (repo, number, head)).fetchone()
         recent = self.db.execute("SELECT SUM(attempts) FROM jobs WHERE repo=? AND number=? AND updated>?", (repo, number, time.time() - 86400)).fetchone()[0] or 0
-        if row and (row[0] >= limit or time.time() - row[1] < cooldown or row[2] == "verified" and not reopen) or recent >= 4:
+        # A verified receipt is trusted only from the worker revision that produced it.
+        stale_worker = bool(worker and row and row[3] != worker)
+        if row and (row[0] >= limit or time.time() - row[1] < cooldown or row[2] == "verified" and not (reopen or stale_worker)) or recent >= 4:
             self.db.rollback()
             return False
         attempts = row[0] + 1 if row else 1
-        self.db.execute("INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?, ?, ?)", (repo, number, head, attempts, time.time(), "running"))
+        self.db.execute("INSERT OR REPLACE INTO jobs (repo, number, head, attempts, updated, outcome, worker) VALUES (?, ?, ?, ?, ?, ?, ?)", (repo, number, head, attempts, time.time(), "running", worker))
         self.db.commit()
         return True
 
@@ -61,7 +65,7 @@ class Ledger:
         payload = json.dumps({"createdAt": now(), **receipt}, sort_keys=True)
         self.db.execute("INSERT INTO receipts(created,payload) VALUES (?,?)", (now(), payload))
         if all(key in receipt for key in ("repo", "number", "head", "outcome")):
-            self.db.execute("UPDATE jobs SET outcome=? WHERE repo=? AND number=? AND head=?", (receipt["outcome"], receipt["repo"], receipt["number"], receipt["head"]))
+            self.db.execute("UPDATE jobs SET outcome=?, worker=? WHERE repo=? AND number=? AND head=?", (receipt["outcome"], receipt.get("workerRevision"), receipt["repo"], receipt["number"], receipt["head"]))
         self.db.commit()
         with (self.root / "receipts.jsonl").open("a") as stream:
             stream.write(payload + "\n")
@@ -195,7 +199,19 @@ def active_authority(api,repo,pr=None):
             raise BoundaryError("default_branch_unknown")
         if pr["head"]["ref"]==current["default_branch"]:
             raise BoundaryError("default_branch_head_prohibited")
+        # Enrolled delivery targets only the current default branch, never a
+        # side branch; the synthetic branch heads have no base and skip this.
+        if isinstance(pr.get("base"),dict) and pr["base"].get("ref")!=current["default_branch"]:
+            raise BoundaryError("non_default_base_branch_prohibited")
     return actor,current
+
+
+def head_or_base_changed(pr, fresh):
+    # The model context is bound to the exact head and base it was built from.
+    return bool(fresh["head"].get("sha") != pr["head"].get("sha")
+        or fresh["head"].get("ref") != pr["head"].get("ref")
+        or fresh["base"].get("ref") != pr["base"].get("ref")
+        or fresh["base"].get("sha") != pr["base"].get("sha"))
 
 
 def lease_hold(policy, repo, pr):
@@ -223,6 +239,21 @@ def lease_hold(policy, repo, pr):
     return None
 
 
+def validate_leases(leases):
+    for lease in leases:
+        number = lease.get("number") if isinstance(lease, dict) else None
+        branch = lease.get("branch") if isinstance(lease, dict) else None
+        # Mistyped selectors (string "42", bool) never equal the native value in
+        # lease_hold, so an active owner lease would be silently dropped.
+        if (not isinstance(lease,dict) or not {"repo","expiresAt"}.issubset(lease)
+                or not isinstance(lease.get("repo"),str) or not isinstance(lease.get("expiresAt"),str)
+                or isinstance(number,bool) or (number is not None and (not isinstance(number,int) or number < 1))
+                or (branch is not None and (not isinstance(branch,str) or not branch))
+                or not (number or branch)):
+            raise BoundaryError("ownership_adapter_invalid_lease")
+        datetime.fromisoformat(lease["expiresAt"].replace("Z","+00:00"))
+
+
 def refresh_leases(policy, *, runner=subprocess.run):
     """A trusted host adapter refreshes native claims, never a model/PR command."""
     command = policy.get("leaseCommand")
@@ -235,12 +266,10 @@ def refresh_leases(policy, *, runner=subprocess.run):
         snapshot = json.loads(result.stdout)
         if set(snapshot) != {"leasesVerifiedAt","leases"} or not isinstance(snapshot["leases"],list):
             raise BoundaryError("ownership_adapter_invalid_output")
-        for lease in snapshot["leases"]:
-            if not isinstance(lease,dict) or not {"repo","expiresAt"}.issubset(lease) or not (lease.get("number") or lease.get("branch")):
-                raise BoundaryError("ownership_adapter_invalid_lease")
-            datetime.fromisoformat(lease["expiresAt"].replace("Z","+00:00"))
+        validate_leases(snapshot["leases"])
         policy = {**policy,**snapshot}
     # Validation occurs on every cycle; a failed feed cannot refresh its own age.
+    validate_leases(policy.get("leases", []))
     if lease_hold(policy,"",{"number":0,"head":{"ref":""}}) == "ownership_snapshot_stale":
         raise BoundaryError("ownership_snapshot_stale")
     return policy
@@ -408,13 +437,15 @@ def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     if any(not isinstance(row["summary"],str) or len(row["summary"].encode())>12_000 for row in failures):
         raise BoundaryError("check_evidence_too_large_or_invalid")
     comments = api.rest(f"repos/{repo}/pulls/{pr['number']}/comments?per_page=100",paginate=True)
-    if any(len(row.get("body","").encode())>12_000 for row in [*reviews,*comments]):
+    conversation = api.rest(f"repos/{repo}/issues/{pr['number']}/comments?per_page=100",paginate=True)
+    if any(len(row.get("body","").encode())>12_000 for row in [*reviews,*comments,*conversation]):
         raise BoundaryError("review_evidence_too_large")
     review_threads=[{key:row.get(key) for key in ("id","isResolved","isOutdated")} | {"comments":{"nodes":[{key:comment.get(key) for key in ("id","databaseId","body","path","line")} for comment in row.get("comments",{}).get("nodes",[])]}} for row in threads]
     context = {"repo": repo, "number": pr["number"], "head": head, "blocker": reason, "failedChecks":failures,
             "failedStatuses":pr.get("deliveryFailedStatuses",[]),
             "files": evidence, "threads": review_threads,
             "comments": [{key:row.get(key) for key in ("id","node_id","in_reply_to_id","body","path","line","original_line","commit_id")} | {"author":row.get("user",{}).get("login")} for row in comments],
+            "conversationComments": [{key:row.get(key) for key in ("id","body","created_at","updated_at")} | {"author":row.get("user",{}).get("login")} for row in conversation],
             "reviews": [{"state": r["state"], "body": r.get("body", ""), "reviewer": r.get("user", {}).get("login")} for r in reviews]}
     if SECRET_PATTERN.search(json.dumps(context)):
         raise BoundaryError("secret_shaped_evidence_not_sent_to_model")
@@ -439,17 +470,22 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         hard_hold=reason in {"draft_or_closed", "external_head_repository", "explicit_hold", "no_required_checks"} or reason=="required_review_missing" and not (pr.get("deliveryFailedChecks") or pr.get("deliveryFailedStatuses"))
         hold = reason if hard_hold else lease_hold(policy, repo, pr)
         if hold:
+            # A queued native auto-merge request would merge on green checks and
+            # bypass this hold; the sole writer disarms it, never in dry-run.
+            if apply and pr.get("auto_merge"):
+                api.merge(repo, number, disable=True)
             return {**receipt, "outcome": "held", "reason": hold}
         if not apply:
             return {**receipt, "outcome": "would_review", "nativeBlocker": reason, "unresolvedThreads": len(threads)}
         if reason in {"missing_required_checks", "checks_not_green", "statuses_not_green"} and not pr.get("deliveryFailedChecks") and not pr.get("deliveryFailedStatuses"):
             return {**receipt, "outcome":"held", "reason":"native_ci_pending"}
         changed_reviews = ledger.review_changed(repo,number,head,threads,reviews)
-        if not ledger.reserve(repo, number, head, reopen=bool(reason or threads or changed_reviews)):
-            return {**receipt, "outcome": "held", "reason": "attempt_budget_or_cooldown"}
-        actor,current=active_authority(api,repo,pr)
         code_root = Path(__file__).resolve().parents[1]
         worker_revision = run_git(code_root, "rev-parse", "HEAD")
+        receipt["workerRevision"] = worker_revision
+        if not ledger.reserve(repo, number, head, reopen=bool(reason or threads or changed_reviews), worker=worker_revision):
+            return {**receipt, "outcome": "held", "reason": "attempt_budget_or_cooldown"}
+        actor,current=active_authority(api,repo,pr)
         source=api.rest(f"repos/{actor}/.github")
         deployed = api.rest(f"repos/{actor}/.github/commits/{quote(source['default_branch'],safe='')}")["sha"]
         if worker_revision != deployed or run_git(code_root,"status","--porcelain"):
@@ -483,7 +519,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             fresh, fresh_reason, _, _ = precheck(api, repo, number)
             policy=refresh_leases(policy)
             active_authority(api,repo,fresh)
-            if fresh["head"]["sha"] != head or lease_hold(policy, repo, fresh) or fresh_reason in {"draft_or_closed", "explicit_hold", "external_head_repository"}:
+            if head_or_base_changed(pr, fresh) or lease_hold(policy, repo, fresh) or fresh_reason in {"draft_or_closed", "explicit_hold", "external_head_repository"}:
                 raise BoundaryError("head_or_owner_changed_before_push")
             # Preserve configured/native signing policy, never force unsigned.
             native_signing=api.signatures_required(repo,fresh["base"]["ref"])
@@ -494,7 +530,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             if native_signing and not configured_signing:
                 policy=refresh_leases(policy)
                 fresh,fresh_reason,_,_=precheck(api,repo,number)
-                if fresh["head"]["sha"]!=head or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
+                if head_or_base_changed(pr, fresh) or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
                     raise BoundaryError("head_or_owner_changed_before_server_commit")
                 if run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true":
                     raise BoundaryError("configured_signing_changed_before_server_commit")
@@ -508,7 +544,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             fresh,fresh_reason,_,_=precheck(api,repo,number)
             policy=refresh_leases(policy)
             active_authority(api,repo,fresh)
-            if fresh["head"]["sha"]!=head or fresh["head"]["ref"]!=pr["head"]["ref"] or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
+            if head_or_base_changed(pr, fresh) or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
                 raise BoundaryError("head_or_owner_changed_before_push")
             current_signing=api.signatures_required(repo,fresh["base"]["ref"]) or run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
             if current_signing and not signed:
@@ -524,7 +560,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         fresh, native_reason, fresh_threads, _ = precheck(api, repo, number)
         policy=refresh_leases(policy)
         active_authority(api,repo,fresh)
-        if fresh["head"]["sha"] != head or lease_hold(policy, repo, fresh):
+        if head_or_base_changed(pr, fresh) or lease_hold(policy, repo, fresh):
             raise BoundaryError("head_or_owner_changed_before_status")
         receipt["nativeAfter"]=fresh.get("deliveryNativeEvidence")
         if merge.review_evidence(api,repo,number) != initial_review_evidence:
@@ -554,13 +590,23 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
         method = next((method for field, method in (("allow_squash_merge", "squash"), ("allow_merge_commit", "merge"), ("allow_rebase_merge", "rebase")) if current.get(field)), None)
         if not method:
             raise BoundaryError("native_merge_setting_missing")
-        if not current.get("allow_auto_merge"):
-            updated=api.rest(f"repos/{repo}",method="PATCH",body={"allow_auto_merge":True})
-            if not updated.get("allow_auto_merge"):
+        # The sole writer repairs every reconciler-flagged setting, never only one.
+        repairs={field:True for field in ("allow_auto_merge","delete_branch_on_merge") if not current.get(field)}
+        if repairs:
+            updated=api.rest(f"repos/{repo}",method="PATCH",body=repairs)
+            if not all(updated.get(field) for field in repairs):
                 raise BoundaryError("native_auto_merge_setting_not_verified")
         if merge.ai_receipt_gate(api,repo,number,head,actor,worker_revision):
             raise BoundaryError("review_changed_before_enrollment")
         if not verified.get("autoMergeRequest"):
+            # Owner intent is rechecked immediately before enrollment: a late
+            # hold label or lease must not be bypassed by a queued merge; the
+            # native required checks remain the CI gate and are not rejudged.
+            final = api.rest(f"repos/{repo}/pulls/{number}")
+            policy = refresh_leases(policy)
+            if (head_or_base_changed(pr, final) or lease_hold(policy, repo, final)
+                    or HOLDS.intersection(str(row.get("name")).casefold() for row in final.get("labels", []) if isinstance(row, dict))):
+                raise BoundaryError("hold_before_enrollment")
             api.merge(repo, number, method, head)
         # Enrollment is verified from GitHub, never inferred from command exit.
         result = api.rest(f"repos/{repo}/pulls/{number}")

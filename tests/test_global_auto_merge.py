@@ -107,7 +107,7 @@ class FakeAPI:
             return [{"check_runs": self.checks.pop(0)}]
         if path.endswith("statuses?per_page=100"):
             assert paginate
-            digest = module.hashlib.sha256(json.dumps({"reviews":[],"comments":[],"threads":[]},sort_keys=True).encode()).hexdigest()
+            digest = module.hashlib.sha256(json.dumps({"reviews":[],"comments":[],"conversationComments":[],"threads":[]},sort_keys=True).encode()).hexdigest()
             return [{"context": module.AI_CONTEXT, "state": "success", "created_at":"2026-10-02T23:00:00Z", "creator": {"login": "dizhaky"}, "target_url": "https://github.com/dizhaky/.github/commit/" + "c" * 40, "description": "AI verified receipt:" + digest + " worker:" + "c" * 40}]
         if path.endswith("/reviews?per_page=100") or path.endswith("/comments?per_page=100"):
             return []
@@ -361,3 +361,31 @@ def test_untrusted_fork_existing_enrollment_is_reported_to_single_writer():
     assert result["pull_requests"][0]["outcome"] == "held_for_ai_controller"
     assert api.actions==[]
     assert not any(action[0] == "merge" for action in api.actions)
+
+
+def test_review_evidence_includes_conversation_comments():
+    class API:
+        def __init__(self):self.calls=[]
+        def rest(self,path,**kwargs):
+            self.calls.append(path);assert kwargs.get("paginate");return []
+        def threads(self,repo,number):return []
+    api=API()
+    evidence=module.review_evidence(api,"org/repo",7)
+    assert set(evidence)=={"reviews","comments","conversationComments","threads"}
+    assert any("/issues/7/comments" in call for call in api.calls)
+
+
+def test_new_conversation_comment_after_receipt_fails_gate():
+    class API:
+        def rest(self,path,**kwargs):
+            if path.endswith("statuses?per_page=100"):
+                assert kwargs.get("paginate")
+                digest=module.hashlib.sha256(json.dumps({"reviews":[],"comments":[],"conversationComments":[{"body":"late finding","updated_at":"2026-10-03T00:00:00Z"}],"threads":[]},sort_keys=True).encode()).hexdigest()
+                return [{"context":module.AI_CONTEXT,"state":"success","created_at":"2026-10-02T23:00:00Z","creator":{"login":"dizhaky"},"target_url":"https://github.com/dizhaky/.github/commit/"+"c"*40,"description":"AI verified receipt:"+digest+" worker:"+"c"*40}]
+            if "/issues/" in path:
+                return [{"body":"late finding","updated_at":"2026-10-03T00:00:00Z"}]
+            if path.endswith("/reviews?per_page=100") or path.endswith("/comments?per_page=100"):
+                return []
+            raise AssertionError(path)
+        def threads(self,repo,number):return []
+    assert module.ai_receipt_gate(API(),"org/repo",7,"a"*40,"dizhaky","c"*40)=="review_changed_after_ai_receipt"
