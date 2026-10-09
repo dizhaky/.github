@@ -454,7 +454,7 @@ def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     return context
 
 
-def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
+def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, expected_head=None):
     number = listed["number"]
     receipt = {"repo": repo, "number": number, "apply": apply}
     def infer(context):
@@ -463,6 +463,8 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
     try:
         pr, reason, threads, reviews = precheck(api, repo, number)
         active_authority(api,repo,pr)
+        if expected_head is not None and pr["head"]["sha"] != expected_head:
+            raise BoundaryError("target_head_changed")
         initial_review_evidence = merge.review_evidence(api,repo,number)
         head = pr["head"]["sha"]
         receipt["head"] = head
@@ -623,10 +625,33 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose):
             directory.cleanup()
 
 
-def cycle(api, ledger, policy, *, apply=False, budget=3):
+def validate_target(repo, number, head):
+    if (not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]+", repo) or repo.rsplit("/", 1)[-1] in {".", ".."}
+            or isinstance(number, bool) or not isinstance(number, int) or number < 1
+            or not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)):
+        raise BoundaryError("invalid_exact_target")
+    return repo, number, head
+
+
+def target_cycle(api, ledger, policy, target, *, apply=False):
+    repo, number, head = validate_target(*target)
+    owner, _ = active_authority(api, repo)
+    listed = api.rest(f"repos/{repo}/pulls/{number}")
+    if type(listed.get("number")) is not int or listed.get("number") != number or (listed.get("head") or {}).get("sha") != head:
+        raise BoundaryError("target_identity_or_head_changed")
+    # No repository discovery, alternate PR selection or automatic new-head retry.
+    receipt = deliver(api, ledger, policy, repo, listed, apply=apply, expected_head=head)
+    receipt["receiptId"] = ledger.record(receipt)
+    return {"owner": owner, "ownedRepositories": 1, "processed": 1, "apply": apply,
+            "target": {"repo": repo, "number": number, "head": head}, "results": [receipt], "discoveryErrors": []}
+
+
+def cycle(api, ledger, policy, *, apply=False, budget=3, target=None):
     core, graphql = api.rate_limit_remaining()
     if core < 300 or graphql < 100:
         return {"outcome": "backpressure", "reason": "api_rate_budget_low", "core": core, "graphql": graphql}
+    if target is not None:
+        return target_cycle(api, ledger, policy, target, apply=apply)
     owner, repositories = owned_repositories(api)
     results, candidates, discovery_errors = [], {}, []
     for repo_row in repositories:
@@ -692,7 +717,18 @@ def main():
     parser.add_argument("--report", type=Path)
     parser.add_argument("--poll-seconds", type=int, default=900)
     parser.add_argument("--budget", type=int, default=3)
+    parser.add_argument("--repo", help="Exact owned repository for a single targeted cycle")
+    parser.add_argument("--pr", type=int, help="Exact PR number; requires --repo and --head")
+    parser.add_argument("--head", help="Exact 40-character lowercase head SHA; no changed-head fallback")
     args = parser.parse_args()
+    target = None
+    if any(value is not None for value in (args.repo, args.pr, args.head)):
+        try:
+            target = validate_target(args.repo, args.pr, args.head)
+        except BoundaryError as exc:
+            parser.error(str(exc))
+        if args.daemon or args.budget != 1:
+            parser.error("exact target requires --budget 1 and a single non-daemon cycle")
     if args.poll_seconds < 300 or not 1 <= args.budget <= 5:
         parser.error("poll >=300 seconds; budget 1..5 PRs per cycle")
     ledger = Ledger(args.state_dir)
@@ -704,7 +740,7 @@ def main():
         while True:
             try:
                 policy = refresh_leases(json.loads(args.policy.read_text()))
-                report = cycle(GitHub(), ledger, policy, apply=args.apply, budget=args.budget)
+                report = cycle(GitHub(), ledger, policy, apply=args.apply, budget=args.budget, target=target)
             except (BoundaryError, merge.APIError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
                 report = {"outcome": "blocked", "reason": str(exc) if isinstance(exc,BoundaryError) else type(exc).__name__}
                 ledger.record(report)

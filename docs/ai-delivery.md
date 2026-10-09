@@ -180,3 +180,53 @@ The local implementation's tests and runtime receipts are recorded in the parent
 branch commit in Organize with its existing authentication, exact tree and owner
 signature; its protected default branch stayed unchanged. Deployment and a live
 complete cycle remain release gates, not claims made by this source change.
+
+## Reproducible bundle and exact-head readiness (DAN-4466)
+
+`ai_delivery.py --repo dizhaky/example --pr 123 --head <40-char-head> --budget 1`
+selects only that exact owned PR/head for one cycle. All three selector fields are
+mandatory together; partial/invalid input, a returned PR identity mismatch or a
+changed head blocks without trying another PR. `--daemon` is incompatible with a
+selector. Dry-run remains the default: omit `--apply`. Existing native protection,
+review, receipt, signature, ownership and freshness gates still apply. A repair
+that changes the head returns waiting for native CI; the next targeted invocation
+must deliberately select and verify that new SHA.
+
+From a clean committed protected-default source, `scripts/ai_delivery_bundle.py
+--output <new-review-directory>` prepares eight regular runtime files and a
+versioned manifest: source SHA, file SHA256 hashes and absolute existing Python/gh
+executables. Output is deterministic for the same source and binary paths. It does
+not install or start anything. The plist starts Python with `-I -B` so bundle files cannot shadow stdlib imports.
+The pinned bootstrap verifies the manifest hash and
+every runtime file before importing the launcher. Unexpected files, symlinks,
+changed content and untracked/dirty source fail closed. No authentication files
+or credentials are copied.
+
+After protected publication and explicit operational authorization, `--install
+--bundle <reviewed-directory> --manifest-sha256 <reviewed-hash>` verifies live
+protected-default source/CI/required signatures and requires its revision to equal
+the manifest before and after materialization. It creates only the current user's
+`~/.local/share/codex-ai-delivery` and
+`~/Library/LaunchAgents/com.dizhaky.ai-delivery.plist`; existing installations and
+symlink paths are preserved and refused. Installation never invokes launchctl.
+The plist is unloaded, RunAtLoad false, interval 900 seconds, budget 1; loading it
+is a separate applying operation. Private mode-0700 directories retain source,
+SQLite/JSONL evidence and rotated logs. The activation request must explicitly
+name MacBook Pro, user danizhaky, service com.dizhaky.ai-delivery, reviewed manifest
+hash/source revision and intended eligible-repository scope. Inspect any disabled
+allow_auto_merge target before authorizing setting restoration.
+
+`--activate` separately rechecks the trusted source and bootstraps only this
+user service, then verifies its exact executable, ordered arguments and installed plist in
+native launchctl readback. Do not run it before coordinated writer retirement, genuine ownership
+clearance and the exact-head protected canary. `--uninstall` is the service-only
+rollback: verify installed and loaded identity, unload only that exact label,
+verify absence and remove only its matching plist. An already-unloaded service is
+handled through an explicit native not-found result. All runtime code, receipts
+and state are retained; unrelated sessions/services/files are untouched. If a
+source race leaves a partial, unloaded installation, preserve it for inspection;
+do not delete/retry over existing contents automatically. No automatic reinstallation
+or legacy-writer restoration is a rollback step.
+
+These artifacts make activation reviewable; tests and prepared bundles do not
+prove installation, completed AI review or a live protected delivery cycle.
