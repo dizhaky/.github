@@ -138,19 +138,20 @@ def test_pr_activity_newer_than_snapshot_waits_for_automated_refresh(field):
 class DeliveryAPI:
     def __init__(self):
         self.actions=[]; self.status_rows=[]
-        self.pr={"number":1,"state":"open","draft":False,"head":{"sha":"a"*40,"ref":"work","repo":{"full_name":"dizhaky/example"}},"base":{"ref":"main"},"merged":False,"auto_merge":None}
+        self.pr={"number":1,"state":"open","draft":False,"head":{"sha":"a"*40,"ref":"work","repo":{"full_name":"dizhaky/example"}},"base":{"ref":"main","sha":"e"*40},"merged":False,"auto_merge":None}
     def rest(self,path,**kwargs):
         if path=="user":return {"login":"dizhaky","id":213320850}
         if path.endswith("/.github/commits/main"):return {"sha":"c"*40}
         if path.endswith("/statuses?per_page=100"):return self.status_rows
         if path.endswith("/reviews?per_page=100") or path.endswith("/comments?per_page=100"):return []
         if path.endswith("/pulls/1"):return copy.deepcopy(self.pr)
-        return {"full_name":path.removeprefix("repos/"),"owner":{"login":"dizhaky","id":213320850},"archived":False,"disabled":False,"permissions":{"admin":True},"allow_auto_merge":True,"allow_squash_merge":True,"default_branch":"main"}
+        return {"full_name":path.removeprefix("repos/"),"owner":{"login":"dizhaky","id":213320850},"archived":False,"disabled":False,"permissions":{"admin":True},"allow_auto_merge":True,"delete_branch_on_merge":True,"allow_squash_merge":True,"default_branch":"main"}
     def status(self,repo,head,state,description,worker_revision=None):
         self.actions.append(("status",state,head))
         self.status_rows.insert(0,{"context":delivery.AI_CONTEXT,"state":state,"description":description,"created_at":datetime.now(timezone.utc).isoformat(),"creator":{"login":"dizhaky"},"target_url":"https://github.com/dizhaky/.github/commit/"+str(worker_revision)})
-    def merge(self,repo,number,method,head):
-        self.actions.append(("merge",repo,number,method,head)); self.pr["auto_merge"]={"enabled_at":"now"}
+    def merge(self,repo,number,method=None,head=None,disable=False):
+        self.actions.append(("disable" if disable else "merge",repo,number,method,head))
+        self.pr["auto_merge"]=None if disable else {"enabled_at":"now"}
     def threads(self,*args):return []
     def resolve_thread(self,thread):self.actions.append(("resolve",thread))
     def signatures_required(self,*args):return False
@@ -395,9 +396,11 @@ def test_local_repair_rechecks_native_pr_and_target_signing_before_push(delivery
     outputs=iter([clean(verdict="repair",patches=[{"path":"a.py","original_sha256":hashlib.sha256(b"value=1\n").hexdigest(),"content":"value=2\n"}]),clean()])
     result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda context:next(outputs))
     assert result["outcome"]=="blocked"
-    assert result["reason"]==("signing_policy_changed_before_push" if drift=="base_signature_added" else "head_or_owner_changed_before_push")
+    # A retargeted base is both outside the reviewed context and outside the
+    # only branch the controller may ever enroll into.
+    assert result["reason"]==("non_default_base_branch_prohibited" if drift=="base_signature_added" else "head_or_owner_changed_before_push")
     assert not any(call[0]=="push" for call in calls)
-    if drift=="base_signature_added":assert branches==["main","signed-base"]
+    if drift=="base_signature_added":assert branches==["main"]
 
 
 def test_clean_native_ci_review_does_not_require_local_dependency_bootstrap(delivery_flow):
@@ -757,3 +760,133 @@ def test_backend_failure_receipt_contains_metadata_without_tool_arguments(tmp_pa
     receipt=json.loads(target.read_text())
     assert receipt["model"]=="gpt-5.5" and receipt["toolEvents"]==1 and receipt["events"][0]["itemType"]=="command_execution"
     assert "DO-NOT-PERSIST" not in target.read_text()
+
+
+def test_verified_jobs_reopen_after_worker_revision_change(tmp_path):
+    ledger=delivery.Ledger(tmp_path)
+    assert ledger.reserve("dizhaky/example",1,"a"*40,worker="c"*40)
+    ledger.record({"repo":"dizhaky/example","number":1,"head":"a"*40,"outcome":"verified","workerRevision":"c"*40})
+    assert not ledger.reserve("dizhaky/example",1,"a"*40,cooldown=0,worker="c"*40)
+    assert ledger.reserve("dizhaky/example",1,"a"*40,cooldown=0,worker="d"*40)
+
+
+def test_legacy_verified_job_without_worker_reverifies_once(tmp_path):
+    import sqlite3
+    legacy=sqlite3.connect(tmp_path/"state.sqlite3")
+    legacy.execute("CREATE TABLE jobs (repo TEXT, number INT, head TEXT, attempts INT, updated REAL, outcome TEXT, PRIMARY KEY(repo, number, head))")
+    legacy.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)",("dizhaky/example",1,"a"*40,1,__import__("time").time(),"verified"))
+    legacy.commit();legacy.close()
+    ledger=delivery.Ledger(tmp_path)
+    assert not ledger.reserve("dizhaky/example",1,"a"*40,cooldown=0)
+    assert ledger.reserve("dizhaky/example",1,"a"*40,cooldown=0,worker="c"*40)
+
+
+def test_hold_disarms_queued_auto_merge_request(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow;api.pr["auto_merge"]={"enabled_at":"now"}
+    monkeypatch.setattr(delivery,"precheck",lambda *args:(copy.deepcopy(api.pr),"explicit_hold",[],[]))
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="held" and result["reason"]=="explicit_hold"
+    assert api.actions==[("disable","dizhaky/example",1,None,None)]
+
+
+def test_hold_in_dry_run_never_disarms(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow;api.pr["auto_merge"]={"enabled_at":"now"}
+    monkeypatch.setattr(delivery,"precheck",lambda *args:(copy.deepcopy(api.pr),"explicit_hold",[],[]))
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=False,backend=lambda ctx:clean())
+    assert result["outcome"]=="held" and api.actions==[]
+
+
+def test_late_hold_label_before_enrollment_blocks_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow;original=api.rest;seen=[]
+    def rest(path,**kwargs):
+        data=original(path,**kwargs)
+        if path.endswith("/pulls/1") and path not in seen:
+            seen.append(path);data["labels"]=[{"name":"ai-delivery-hold"}]
+        return data
+    monkeypatch.setattr(api,"rest",rest)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="blocked" and result["reason"]=="hold_before_enrollment"
+    assert not any(action[0]=="merge" for action in api.actions)
+
+
+def test_non_default_base_branch_pr_is_never_enrolled(delivery_flow):
+    api,ledger=delivery_flow;api.pr["base"]["ref"]="release-x"
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="blocked" and result["reason"]=="non_default_base_branch_prohibited"
+    assert api.actions==[]
+
+
+def test_sole_writer_repairs_reconciler_flagged_branch_cleanup(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow;original=api.rest;patched=[]
+    def rest(path,**kwargs):
+        data=original(path,**kwargs)
+        if path=="repos/dizhaky/example":
+            data["delete_branch_on_merge"]=False
+            if kwargs.get("method")=="PATCH":patched.append(kwargs["body"]);data.update(kwargs["body"])
+        return data
+    monkeypatch.setattr(api,"rest",rest)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="verified" and patched==[{"delete_branch_on_merge":True}]
+
+
+def test_base_retarget_during_clean_review_blocks_receipt(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow;count=[0]
+    def check(*args):
+        count[0]+=1;pr=copy.deepcopy(api.pr)
+        if count[0]>1:pr["base"]={"ref":"release-x","sha":"f"*40}
+        return pr,None,[],[]
+    monkeypatch.setattr(delivery,"precheck",check)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["reason"]=="non_default_base_branch_prohibited"
+    assert api.actions==[("status","pending","a"*40)]
+
+
+@pytest.mark.parametrize("bad",["string_number","bool_number","zero_number","bool_branch","string_expiry","non_string_repo"])
+def test_mistyped_lease_selectors_fail_closed(bad):
+    future=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()
+    lease={"repo":"dizhaky/example","number":1,"expiresAt":future}
+    if bad=="string_number":lease["number"]="1"
+    if bad=="bool_number":lease["number"]=True
+    if bad=="zero_number":lease["number"]=0
+    if bad=="bool_branch":lease={"repo":"dizhaky/example","branch":True,"expiresAt":future}
+    if bad=="string_expiry":lease["expiresAt"]=12345
+    if bad=="non_string_repo":lease["repo"]=42
+    snapshot={"leasesVerifiedAt":datetime.now(timezone.utc).isoformat(),"leases":[lease]}
+    runner=lambda *args,**kw:SimpleNamespace(returncode=0,stdout=json.dumps(snapshot))
+    with pytest.raises(proposal.BoundaryError,match="ownership_adapter_invalid_lease"):
+        delivery.refresh_leases({"leaseCommand":["trusted-lease-reader"]},runner=runner)
+
+
+def test_valid_branch_only_lease_passes_strict_validation():
+    future=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()
+    snapshot={"leasesVerifiedAt":datetime.now(timezone.utc).isoformat(),
+              "leases":[{"repo":"dizhaky/example","branch":"work","expiresAt":future}]}
+    runner=lambda *args,**kw:SimpleNamespace(returncode=0,stdout=json.dumps(snapshot))
+    refreshed=delivery.refresh_leases({"leaseCommand":["trusted-lease-reader"]},runner=runner)
+    assert refreshed["leases"][0]["branch"]=="work"
+
+
+def test_conversation_comments_reach_model_context(tmp_path,monkeypatch):
+    replies=[{"id":1,"body":"inline finding"},{"id":2,"in_reply_to_id":1,"body":"reply"}]
+    conversation=[{"id":3,"body":"general review finding","user":{"login":"dizhaky"},"created_at":"2026-10-02T00:00:00Z","updated_at":"2026-10-02T00:00:00Z"}]
+    class API:
+        def rest(self,path,**kw):
+            assert kw.get("paginate")
+            if "/issues/1/comments?" in path:return conversation
+            if "/comments?" in path:return replies
+            if "/check-runs?" in path:return [{"check_runs":[]}]
+            return []
+    monkeypatch.setattr(delivery,"run_git",lambda *args:"")
+    context=delivery.context_from_clone(API(),tmp_path,"dizhaky/example",{"number":1,"head":{"sha":"a"*40}},None,[],[])
+    assert [row["body"] for row in context["conversationComments"]]==["general review finding"]
+    assert context["conversationComments"][0]["author"]=="dizhaky"
+    assert [row["body"] for row in context["comments"]]==[row["body"] for row in replies]
+
+
+def test_new_conversation_comment_invalidates_trusted_receipt(delivery_flow):
+    api,ledger=delivery_flow
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="verified"
+    original=api.rest
+    api.rest=lambda path,**kw: (copy.deepcopy(api.pr) if path.endswith("/pulls/1") else [{"body":"late conversation finding","updated_at":"2026-10-02T00:00:00Z"}] if "/issues/1/comments?" in path else original(path,**kw))
+    assert merge.ai_receipt_gate(api,"dizhaky/example",1,"a"*40,"dizhaky","c"*40)=="review_changed_after_ai_receipt"

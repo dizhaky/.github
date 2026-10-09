@@ -41,7 +41,7 @@ def ai_receipt_gate(api, repo, number, head, owner, worker_revision):
         return "review_changed_after_ai_receipt"
     try:
         recorded = datetime.fromisoformat(status["created_at"].replace("Z", "+00:00"))
-        for endpoint, key in (("reviews", "submitted_at"), ("comments", "updated_at")):
+        for endpoint, key in (("reviews", "submitted_at"), ("comments", "updated_at"), ("conversationComments", "updated_at")):
             rows = evidence[endpoint]
             if any(datetime.fromisoformat(row[key].replace("Z", "+00:00")) > recorded for row in rows if row.get(key)):
                 return "review_changed_after_ai_receipt"
@@ -53,8 +53,11 @@ def ai_receipt_gate(api, repo, number, head, owner, worker_revision):
 
 
 def review_evidence(api,repo,number):
+    # Conversation (issue) comments carry human reviewer findings too; the
+    # receipt digest must change when a new one lands on the PR.
     return {"reviews":api.rest(f"repos/{repo}/pulls/{number}/reviews?per_page=100",paginate=True),
             "comments":api.rest(f"repos/{repo}/pulls/{number}/comments?per_page=100",paginate=True),
+            "conversationComments":api.rest(f"repos/{repo}/issues/{number}/comments?per_page=100",paginate=True),
             "threads":api.threads(repo,number)}
 
 
@@ -223,13 +226,16 @@ class GitHub:
             },
         }
 
-    def merge(self, repo, number, method, head, disable=False):
+    def merge(self, repo, number, method=None, head=None, disable=False):
         # Native auto-merge enrollment has no REST equivalent; this remains
         # the sole GraphQL call site in this reconciler (DAN-3334).
         args = ["pr", "merge", str(number), "--repo", repo]
-        args += ["--disable-auto"] if disable else [
-            "--auto", f"--{method}", "--match-head-commit", head,
-        ]
+        if disable:
+            args += ["--disable-auto"]
+        else:
+            if not method or not head:
+                raise APIError("merge_method_and_head_required")
+            args += ["--auto", f"--{method}", "--match-head-commit", head]
         self.run(args)
 
 
