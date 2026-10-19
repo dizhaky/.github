@@ -137,6 +137,7 @@ def test_active_lease_and_stale_snapshot_block():
     p=policy(); pr={"number":1,"head":{"ref":"work"}}
     p["leases"]=[{"repo":"dizhaky/example","number":1,"expiresAt":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()}]
     assert delivery.lease_hold(p,"dizhaky/example",pr)=="active_owner_lease"
+    assert delivery.lease_hold(p,"Dizhaky/example",pr)=="active_owner_lease"
     p["leasesVerifiedAt"]=(datetime.now(timezone.utc)-timedelta(hours=1)).isoformat()
     assert delivery.lease_hold(p,"dizhaky/example",pr)=="ownership_snapshot_stale"
 

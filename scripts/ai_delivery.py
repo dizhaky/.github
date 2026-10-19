@@ -232,7 +232,10 @@ def lease_hold(policy, repo, pr):
                 return "pr_activity_newer_than_ownership_snapshot"
     for lease in policy.get("leases", []):
         expiry = datetime.fromisoformat(lease["expiresAt"].replace("Z", "+00:00"))
-        if lease["repo"] == repo and expiry > datetime.now(timezone.utc) and (
+        # GitHub repository names are case-insensitive. A capitalized --repo
+        # or feed entry must still match the canonical lease, or the hold is
+        # silently skipped and delivery writes proceed.
+        if isinstance(lease.get("repo"), str) and isinstance(repo, str) and lease["repo"].casefold() == repo.casefold() and expiry > datetime.now(timezone.utc) and (
             lease.get("number") == pr["number"] or lease.get("branch") in {pr["head"]["ref"],"*"}
         ):
             return "active_owner_lease"
@@ -474,8 +477,14 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
         if hold:
             # A queued native auto-merge request would merge on green checks and
             # bypass this hold; the sole writer disarms it, never in dry-run.
+            # Refetch immediately before that write: a head that moved during
+            # the review read is a different request and must not be disarmed.
             if apply and pr.get("auto_merge"):
-                api.merge(repo, number, disable=True)
+                fresh = api.rest(f"repos/{repo}/pulls/{number}")
+                if (fresh.get("head") or {}).get("sha") != head:
+                    raise BoundaryError("target_head_changed" if expected_head is not None else "head_changed")
+                if fresh.get("auto_merge"):
+                    api.merge(repo, number, disable=True)
             return {**receipt, "outcome": "held", "reason": hold}
         if not apply:
             return {**receipt, "outcome": "would_review", "nativeBlocker": reason, "unresolvedThreads": len(threads)}
@@ -635,7 +644,10 @@ def validate_target(repo, number, head):
 
 def target_cycle(api, ledger, policy, target, *, apply=False):
     repo, number, head = validate_target(*target)
-    owner, _ = active_authority(api, repo)
+    owner, metadata = active_authority(api, repo)
+    # Lease, receipt and API paths must use the canonical name. Callers may
+    # pass any capitalization GitHub accepts.
+    repo = metadata["full_name"]
     listed = api.rest(f"repos/{repo}/pulls/{number}")
     if type(listed.get("number")) is not int or listed.get("number") != number or (listed.get("head") or {}).get("sha") != head:
         raise BoundaryError("target_identity_or_head_changed")
