@@ -27,6 +27,13 @@ from ai_proposal import BoundaryError, SECRET_PATTERN, apply_patches, evidence_p
 
 AI_CONTEXT = "AI Delivery / verified"
 HOLDS = {"do-not-merge", "hold", "manual-merge", "ai-delivery-hold"}
+# GitHub will merge a queued auto-merge once required checks are green. These
+# controller holds are not that gate, so a queued request has to be disarmed.
+CONTROLLER_HOLDS = {
+    "draft_or_closed", "external_head_repository", "explicit_hold", "no_required_checks",
+    "required_review_missing", "changes_requested", "label_hold", "not_open", "draft",
+    "unresolved_review_threads", "required_check_app_mismatch",
+}
 
 
 def now():
@@ -457,6 +464,31 @@ def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     return context
 
 
+def disarm_queued_merge(api, repo, number, head, queued, *, expected_head, apply):
+    """Disable auto-merge only when this exact head is still queued."""
+    if not apply or not queued:
+        return
+    # Refetch immediately before the write. A head that moved is a different
+    # request and must not be disarmed.
+    fresh = api.rest(f"repos/{repo}/pulls/{number}")
+    if (fresh.get("head") or {}).get("sha") != head:
+        raise BoundaryError("target_head_changed" if expected_head is not None else "head_changed")
+    if fresh.get("auto_merge"):
+        api.merge(repo, number, disable=True)
+
+
+def stop_if_moved_or_held(api, repo, number, head, current, fresh_pr, policy, fresh_reason, error, *, expected_head, apply):
+    owner_hold = lease_hold(policy, repo, fresh_pr)
+    boundary = fresh_reason in {"draft_or_closed", "explicit_hold", "external_head_repository"}
+    if head_or_base_changed(current, fresh_pr) or owner_hold or boundary:
+        if (owner_hold or boundary) and not head_or_base_changed(current, fresh_pr):
+            disarm_queued_merge(
+                api, repo, number, head, current.get("auto_merge") or fresh_pr.get("auto_merge"),
+                expected_head=expected_head, apply=apply,
+            )
+        raise BoundaryError(error)
+
+
 def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, expected_head=None):
     number = listed["number"]
     receipt = {"repo": repo, "number": number, "apply": apply}
@@ -477,14 +509,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
         if hold:
             # A queued native auto-merge request would merge on green checks and
             # bypass this hold; the sole writer disarms it, never in dry-run.
-            # Refetch immediately before that write: a head that moved during
-            # the review read is a different request and must not be disarmed.
-            if apply and pr.get("auto_merge"):
-                fresh = api.rest(f"repos/{repo}/pulls/{number}")
-                if (fresh.get("head") or {}).get("sha") != head:
-                    raise BoundaryError("target_head_changed" if expected_head is not None else "head_changed")
-                if fresh.get("auto_merge"):
-                    api.merge(repo, number, disable=True)
+            disarm_queued_merge(api, repo, number, head, pr.get("auto_merge"), expected_head=expected_head, apply=apply)
             return {**receipt, "outcome": "held", "reason": hold}
         if not apply:
             return {**receipt, "outcome": "would_review", "nativeBlocker": reason, "unresolvedThreads": len(threads)}
@@ -530,8 +555,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
             fresh, fresh_reason, _, _ = precheck(api, repo, number)
             policy=refresh_leases(policy)
             active_authority(api,repo,fresh)
-            if head_or_base_changed(pr, fresh) or lease_hold(policy, repo, fresh) or fresh_reason in {"draft_or_closed", "explicit_hold", "external_head_repository"}:
-                raise BoundaryError("head_or_owner_changed_before_push")
+            stop_if_moved_or_held(api, repo, number, head, pr, fresh, policy, fresh_reason, "head_or_owner_changed_before_push", expected_head=expected_head, apply=apply)
             # Preserve configured/native signing policy, never force unsigned.
             native_signing=api.signatures_required(repo,fresh["base"]["ref"])
             configured_signing=run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
@@ -541,8 +565,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
             if native_signing and not configured_signing:
                 policy=refresh_leases(policy)
                 fresh,fresh_reason,_,_=precheck(api,repo,number)
-                if head_or_base_changed(pr, fresh) or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
-                    raise BoundaryError("head_or_owner_changed_before_server_commit")
+                stop_if_moved_or_held(api, repo, number, head, pr, fresh, policy, fresh_reason, "head_or_owner_changed_before_server_commit", expected_head=expected_head, apply=apply)
                 if run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true":
                     raise BoundaryError("configured_signing_changed_before_server_commit")
                 new_head=server_signed_patch(api,root,repo,fresh,receipt["changedFiles"])
@@ -555,8 +578,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
             fresh,fresh_reason,_,_=precheck(api,repo,number)
             policy=refresh_leases(policy)
             active_authority(api,repo,fresh)
-            if head_or_base_changed(pr, fresh) or lease_hold(policy,repo,fresh) or fresh_reason in {"draft_or_closed","explicit_hold","external_head_repository"}:
-                raise BoundaryError("head_or_owner_changed_before_push")
+            stop_if_moved_or_held(api, repo, number, head, pr, fresh, policy, fresh_reason, "head_or_owner_changed_before_push", expected_head=expected_head, apply=apply)
             current_signing=api.signatures_required(repo,fresh["base"]["ref"]) or run_git(root,"config","--type=bool","--default=false","--get","commit.gpgsign")=="true"
             if current_signing and not signed:
                 raise BoundaryError("signing_policy_changed_before_push")
@@ -571,8 +593,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
         fresh, native_reason, fresh_threads, _ = precheck(api, repo, number)
         policy=refresh_leases(policy)
         active_authority(api,repo,fresh)
-        if head_or_base_changed(pr, fresh) or lease_hold(policy, repo, fresh):
-            raise BoundaryError("head_or_owner_changed_before_status")
+        stop_if_moved_or_held(api, repo, number, head, pr, fresh, policy, None, "head_or_owner_changed_before_status", expected_head=expected_head, apply=apply)
         receipt["nativeAfter"]=fresh.get("deliveryNativeEvidence")
         if merge.review_evidence(api,repo,number) != initial_review_evidence:
             raise BoundaryError("review_changed_during_ai_review")
@@ -580,7 +601,10 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
             known = {thread["id"] for thread in fresh_threads}
             resolved = set(proposal["resolved_thread_ids"])
             if native_reason or resolved != known:
-                return {**receipt, "outcome": "held", "reason": native_reason or "unresolved_review_threads"}
+                reason = native_reason or "unresolved_review_threads"
+                if reason in CONTROLLER_HOLDS:
+                    disarm_queued_merge(api, repo, number, head, pr.get("auto_merge") or fresh.get("auto_merge"), expected_head=expected_head, apply=apply)
+                return {**receipt, "outcome": "held", "reason": reason}
             # A fresh no-tool reviewer proved these exact current-code findings
             # satisfied; do not dismiss reviews or self-approve required reviews.
             for thread_id in sorted(resolved):
@@ -609,15 +633,17 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
                 raise BoundaryError("native_auto_merge_setting_not_verified")
         if merge.ai_receipt_gate(api,repo,number,head,actor,worker_revision):
             raise BoundaryError("review_changed_before_enrollment")
+        # Owner intent is rechecked immediately before enrollment, including when
+        # auto-merge is already queued. A late hold label or lease must not be
+        # bypassed by that request. Native required checks stay GitHub's gate.
+        final = api.rest(f"repos/{repo}/pulls/{number}")
+        policy = refresh_leases(policy)
+        if (head_or_base_changed(pr, final) or lease_hold(policy, repo, final)
+                or HOLDS.intersection(str(row.get("name")).casefold() for row in final.get("labels", []) if isinstance(row, dict))):
+            if not head_or_base_changed(pr, final):
+                disarm_queued_merge(api, repo, number, head, final.get("auto_merge"), expected_head=expected_head, apply=apply)
+            raise BoundaryError("hold_before_enrollment")
         if not verified.get("autoMergeRequest"):
-            # Owner intent is rechecked immediately before enrollment: a late
-            # hold label or lease must not be bypassed by a queued merge; the
-            # native required checks remain the CI gate and are not rejudged.
-            final = api.rest(f"repos/{repo}/pulls/{number}")
-            policy = refresh_leases(policy)
-            if (head_or_base_changed(pr, final) or lease_hold(policy, repo, final)
-                    or HOLDS.intersection(str(row.get("name")).casefold() for row in final.get("labels", []) if isinstance(row, dict))):
-                raise BoundaryError("hold_before_enrollment")
             api.merge(repo, number, method, head)
         # Enrollment is verified from GitHub, never inferred from command exit.
         result = api.rest(f"repos/{repo}/pulls/{number}")

@@ -905,3 +905,93 @@ def test_new_conversation_comment_invalidates_trusted_receipt(delivery_flow):
     original=api.rest
     api.rest=lambda path,**kw: (copy.deepcopy(api.pr) if path.endswith("/pulls/1") else [{"body":"late conversation finding","updated_at":"2026-10-02T00:00:00Z"}] if "/issues/1/comments?" in path else original(path,**kw))
     assert merge.ai_receipt_gate(api,"dizhaky/example",1,"a"*40,"dizhaky","c"*40)=="review_changed_after_ai_receipt"
+
+
+def test_unresolved_threads_disarm_queued_auto_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    api.pr["auto_merge"]={"enabled_at":"now"}
+    calls={"n":0}
+    def check(*args):
+        calls["n"]+=1
+        return copy.deepcopy(api.pr),None,([{"id":"T1"}] if calls["n"]>1 else []),[]
+    monkeypatch.setattr(delivery,"precheck",check)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="held" and result["reason"]=="unresolved_review_threads"
+    assert ("disable","dizhaky/example",1,None,None) in api.actions
+    assert not any(action[0]=="merge" for action in api.actions)
+
+
+def test_late_hold_disarms_an_already_queued_auto_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    api.pr["auto_merge"]={"enabled_at":"now"}
+    monkeypatch.setattr(merge,"evidence",lambda *args:({"headRefOid":"a"*40,"autoMergeRequest":{"enabledAt":"now"}},None))
+    original=api.rest
+    def rest(path,**kwargs):
+        data=original(path,**kwargs)
+        if path.endswith("/pulls/1"):
+            data=copy.deepcopy(data)
+            data["labels"]=[{"name":"hold"}]
+            data["auto_merge"]={"enabled_at":"now"}
+        return data
+    monkeypatch.setattr(api,"rest",rest)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="blocked" and result["reason"]=="hold_before_enrollment"
+    assert ("disable","dizhaky/example",1,None,None) in api.actions
+    assert not any(action[0]=="merge" for action in api.actions)
+
+
+def test_lease_during_review_disarms_queued_auto_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    api.pr["auto_merge"]={"enabled_at":"now"}
+    real=delivery.refresh_leases
+    def refresh(policy,**kwargs):
+        refreshed=real(policy,**kwargs)
+        refreshed["leases"]=[{"repo":"dizhaky/example","branch":"*","expiresAt":"2099-01-01T00:00:00+00:00"}]
+        return refreshed
+    monkeypatch.setattr(delivery,"refresh_leases",refresh)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="blocked" and result["reason"]=="head_or_owner_changed_before_status"
+    assert ("disable","dizhaky/example",1,None,None) in api.actions
+    assert not any(action[0]=="merge" for action in api.actions)
+
+
+def test_ci_wait_after_review_does_not_disarm_auto_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    api.pr["auto_merge"]={"enabled_at":"now"}
+    calls={"n":0}
+    def check(*args):
+        calls["n"]+=1
+        reason="checks_not_green" if calls["n"]>1 else None
+        return copy.deepcopy(api.pr),reason,[],[]
+    monkeypatch.setattr(delivery,"precheck",check)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="held" and result["reason"]=="checks_not_green"
+    assert api.actions==[("status","pending","a"*40)]
+
+
+def test_hold_during_repair_disarms_queued_auto_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    api.pr["auto_merge"]={"enabled_at":"now"}
+    calls={"n":0}
+    def check(*args):
+        calls["n"]+=1
+        reason="explicit_hold" if calls["n"]>1 else None
+        return copy.deepcopy(api.pr),reason,[],[]
+    def git(root,*args):
+        if args and args[0]=="clone":
+            clone=Path(args[-1]);clone.mkdir();(clone/"a.py").write_text("value=1\n")
+        if args==("rev-parse","HEAD"):
+            return "c"*40 if root==ROOT else "b"*40
+        if args==("diff","--name-only"):return "a.py"
+        return ""
+    monkeypatch.setattr(delivery,"precheck",check)
+    monkeypatch.setattr(delivery,"run_git",git)
+    seen={"n":0}
+    def backend(context):
+        seen["n"]+=1
+        if seen["n"]>1:return clean()
+        return clean(verdict="repair",patches=[{"path":"a.py","original_sha256":hashlib.sha256(b"value=1\n").hexdigest(),"content":"value=2\n"}])
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=backend)
+    assert result["outcome"]=="blocked" and result["reason"]=="head_or_owner_changed_before_push"
+    assert ("disable","dizhaky/example",1,None,None) in api.actions
+    assert not any(action[0]=="merge" for action in api.actions)

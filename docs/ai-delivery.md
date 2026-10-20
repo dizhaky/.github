@@ -82,7 +82,9 @@ required check contexts remain held even if optional CI passes.
 Immediately before normal protected `gh pr merge --auto --match-head-commit`, the
 controller rechecks active ownership, head, lease, native approvals and receipt.
 It preserves an existing merge request's method; otherwise it selects an allowed
-method. It restores `allow_auto_merge` only for a verified eligible owned PR if
+method. A hold label, executor lease, unresolved review thread, or other
+controller-only hold on that same head disarms an already queued auto-merge.
+A head that moved is left queued, because that request belongs to the new head. It restores `allow_auto_merge` only for a verified eligible owned PR if
 needed, then verifies the setting. It never uses admin merge, force push, draft
 conversion or a protection bypass. Actual queued/merged state is re-read.
 
