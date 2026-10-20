@@ -157,12 +157,36 @@ def test_failed_activation_unloads_the_service_it_just_registered(built, tmp_pat
     def runner(command, **kwargs):
         calls.append(command)
         if command[1] == "print":
+            if "bootout" in [c[1] for c in calls]:
+                return SimpleNamespace(returncode=113, stdout="", stderr='Could not find service "' + bundle.LABEL + '"')
             return SimpleNamespace(returncode=0, stdout="program = /usr/bin/unrelated\n", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     with pytest.raises(ValueError, match="service_activation_not_verified"):
         bundle.service(home, activate=True, runner=runner)
-    assert [command[1] for command in calls] == ["bootstrap", "print", "bootout"]
+    assert [command[1] for command in calls] == ["bootstrap", "print", "bootout", "print"]
     assert calls[2] == ["launchctl", "bootout", "gui/" + str(os.getuid()) + "/" + bundle.LABEL]
+
+
+@pytest.mark.parametrize("bootout_rc,still_loaded", [(1, False), (0, True)])
+def test_unverified_rollback_is_a_distinct_error(built, tmp_path, monkeypatch, bootout_rc, still_loaded):
+    import launch_ai_delivery
+    _, output, digest = built
+    home = tmp_path / "home"
+    home.mkdir()
+    bundle.install(output, digest, home, gate=lambda: ("", "", "a" * 40))
+    monkeypatch.setattr(launch_ai_delivery, "source_revision", lambda api: ("dizhaky/.github", "main", "a" * 40))
+    state = {"bootout": False}
+    def runner(command, **kwargs):
+        if command[1] == "bootout":
+            state["bootout"] = True
+            return SimpleNamespace(returncode=bootout_rc, stdout="", stderr="")
+        if command[1] == "print":
+            if state["bootout"] and not still_loaded:
+                return SimpleNamespace(returncode=113, stdout="", stderr='Could not find service "' + bundle.LABEL + '"')
+            return SimpleNamespace(returncode=0, stdout="program = /usr/bin/unrelated\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    with pytest.raises(ValueError, match="service_rollback_not_verified"):
+        bundle.service(home, activate=True, runner=runner)
 
 
 def test_rejected_bootstrap_does_not_bootout_an_existing_service(built, tmp_path, monkeypatch):

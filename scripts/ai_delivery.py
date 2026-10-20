@@ -482,6 +482,11 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
             if apply and pr.get("auto_merge"):
                 fresh = api.rest(f"repos/{repo}/pulls/{number}")
                 if (fresh.get("head") or {}).get("sha") != head:
+                    # A new head inherits the queued request. Disarm it on that
+                    # fresh head only while the hold still applies to it;
+                    # hard holds are PR-level, lease holds are re-run on fresh.
+                    if fresh.get("auto_merge") and (hard_hold or lease_hold(policy, repo, fresh)):
+                        api.merge(repo, number, disable=True)
                     raise BoundaryError("target_head_changed" if expected_head is not None else "head_changed")
                 if fresh.get("auto_merge"):
                     api.merge(repo, number, disable=True)
