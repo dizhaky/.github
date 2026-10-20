@@ -186,7 +186,9 @@ complete cycle remain release gates, not claims made by this source change.
 `ai_delivery.py --repo dizhaky/example --pr 123 --head <40-char-head> --budget 1`
 selects only that exact owned PR/head for one cycle. All three selector fields are
 mandatory together; partial/invalid input, a returned PR identity mismatch or a
-changed head blocks without trying another PR. `--daemon` is incompatible with a
+changed head blocks without trying another PR. `--repo` capitalization is replaced
+with the API `full_name` before lease and delivery checks, so a capitalized name
+cannot skip a canonical executor lease. `--daemon` is incompatible with a
 selector. Dry-run remains the default: omit `--apply`. Existing native protection,
 review, receipt, signature, ownership and freshness gates still apply. A repair
 that changes the head returns waiting for native CI; the next targeted invocation
@@ -218,8 +220,10 @@ allow_auto_merge target before authorizing setting restoration.
 
 `--activate` separately rechecks the trusted source and bootstraps only this
 user service, then verifies its exact executable, ordered arguments and installed plist in
-native launchctl readback. Do not run it before coordinated writer retirement, genuine ownership
-clearance and the exact-head protected canary. `--uninstall` is the service-only
+native launchctl readback. If bootstrap succeeds but that readback fails, the same
+label is booted out before the command reports failure. Do not run it before
+coordinated writer retirement, genuine ownership clearance and the exact-head
+protected canary. `--uninstall` is the service-only
 rollback: verify installed and loaded identity, unload only that exact label,
 verify absence and remove only its matching plist. An already-unloaded service is
 handled through an explicit native not-found result. All runtime code, receipts

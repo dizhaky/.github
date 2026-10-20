@@ -146,6 +146,41 @@ def test_activation_rechecks_source_and_verifies_exact_loaded_service(built, tmp
         bundle.service(home, activate=True, runner=lambda *a, **k: pytest.fail("must not activate"))
 
 
+def test_failed_activation_unloads_the_service_it_just_registered(built, tmp_path, monkeypatch):
+    import launch_ai_delivery
+    _, output, digest = built
+    home = tmp_path / "home"
+    home.mkdir()
+    bundle.install(output, digest, home, gate=lambda: ("", "", "a" * 40))
+    monkeypatch.setattr(launch_ai_delivery, "source_revision", lambda api: ("dizhaky/.github", "main", "a" * 40))
+    calls = []
+    def runner(command, **kwargs):
+        calls.append(command)
+        if command[1] == "print":
+            return SimpleNamespace(returncode=0, stdout="program = /usr/bin/unrelated\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    with pytest.raises(ValueError, match="service_activation_not_verified"):
+        bundle.service(home, activate=True, runner=runner)
+    assert [command[1] for command in calls] == ["bootstrap", "print", "bootout"]
+    assert calls[2] == ["launchctl", "bootout", "gui/" + str(os.getuid()) + "/" + bundle.LABEL]
+
+
+def test_rejected_bootstrap_does_not_bootout_an_existing_service(built, tmp_path, monkeypatch):
+    import launch_ai_delivery
+    _, output, digest = built
+    home = tmp_path / "home"
+    home.mkdir()
+    bundle.install(output, digest, home, gate=lambda: ("", "", "a" * 40))
+    monkeypatch.setattr(launch_ai_delivery, "source_revision", lambda api: ("dizhaky/.github", "main", "a" * 40))
+    calls = []
+    def runner(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1, stdout="", stderr="already loaded")
+    with pytest.raises(ValueError, match="service_activation_not_verified"):
+        bundle.service(home, activate=True, runner=runner)
+    assert [command[1] for command in calls] == ["bootstrap"]
+
+
 def test_uninstall_rejects_expected_paths_in_unrelated_fields(built, tmp_path):
     _, output, digest = built; home = tmp_path / "home"; home.mkdir()
     bundle.install(output, digest, home, gate=lambda: ("", "", "a" * 40))

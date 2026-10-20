@@ -39,6 +39,36 @@ def test_native_returned_identity_must_match(delivery_flow, field, value):
     assert api.actions == []
 
 
+def test_noncanonical_repo_is_held_by_canonical_lease(delivery_flow, monkeypatch):
+    api, ledger = delivery_flow
+    original = api.rest
+    def rest(path, **kwargs):
+        data = original(path, **kwargs)
+        if path == "repos/Dizhaky/example":
+            data["full_name"] = "dizhaky/example"
+        return data
+    monkeypatch.setattr(api, "rest", rest)
+    p = policy()
+    p["leases"] = [{"repo": "dizhaky/example", "branch": "*", "expiresAt": "2099-01-01T00:00:00Z"}]
+    result = delivery.target_cycle(api, ledger, p, ("Dizhaky/example", 1, "a" * 40))
+    assert result["target"]["repo"] == "dizhaky/example"
+    assert result["results"][0]["outcome"] == "held"
+    assert result["results"][0]["reason"] == "active_owner_lease"
+    assert api.actions == []
+
+
+@pytest.mark.parametrize("expected,reason", [("a" * 40, "target_head_changed"), (None, "head_changed")])
+def test_changed_head_before_hold_disarm_does_not_write(delivery_flow, monkeypatch, expected, reason):
+    api, ledger = delivery_flow
+    api.pr["auto_merge"] = {"enabled_at": "now"}
+    held = copy.deepcopy(api.pr)
+    monkeypatch.setattr(delivery, "precheck", lambda *args: (held, "explicit_hold", [], []))
+    api.pr["head"]["sha"] = "b" * 40
+    result = delivery.deliver(api, ledger, policy(), "dizhaky/example", {"number": 1}, apply=True, expected_head=expected, backend=lambda ctx: {"verdict": "clean"})
+    assert result["outcome"] == "blocked" and result["reason"] == reason
+    assert api.actions == []
+
+
 def test_race_after_selection_blocks_before_any_write(delivery_flow, monkeypatch):
     api, ledger = delivery_flow
     original = delivery.precheck

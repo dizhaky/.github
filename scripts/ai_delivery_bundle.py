@@ -189,7 +189,18 @@ def service(home, *, activate=False, runner=subprocess.run):
             raise ValueError("activation_source_changed")
         command = ["launchctl", "bootstrap", domain, str(plist)]
         result = runner(command, capture_output=True, text=True, check=False)
-        if result.returncode or not probe():
+        verified = False
+        if result.returncode == 0:
+            try:
+                verified = probe()
+            except ValueError:
+                verified = False
+        if not verified:
+            # bootstrap already registered the interval writer. Unload that
+            # exact label before reporting failure so a bad readback cannot
+            # leave --apply running.
+            if result.returncode == 0:
+                runner(["launchctl", "bootout", target], capture_output=True, text=True, check=False)
             raise ValueError("service_activation_not_verified")
     else:
         if probe():
