@@ -66,6 +66,19 @@ def test_changed_head_before_hold_disarm_does_not_write(delivery_flow, monkeypat
     api.pr["head"]["sha"] = "b" * 40
     result = delivery.deliver(api, ledger, policy(), "dizhaky/example", {"number": 1}, apply=True, expected_head=expected, backend=lambda ctx: {"verdict": "clean"})
     assert result["outcome"] == "blocked" and result["reason"] == reason
+    assert api.actions == [("disable", "dizhaky/example", 1, None, None)]
+    assert api.pr["auto_merge"] is None
+
+
+def test_changed_head_with_lapsed_lease_is_not_disarmed(delivery_flow, monkeypatch):
+    api, ledger = delivery_flow
+    api.pr["auto_merge"] = {"enabled_at": "now"}
+    held = copy.deepcopy(api.pr)
+    monkeypatch.setattr(delivery, "precheck", lambda *args: (held, None, [], []))
+    monkeypatch.setattr(delivery, "lease_hold", lambda p, r, pr: "active_owner_lease" if pr["head"]["sha"] == "a" * 40 else None)
+    api.pr["head"]["sha"] = "b" * 40
+    result = delivery.deliver(api, ledger, policy(), "dizhaky/example", {"number": 1}, apply=True, backend=lambda ctx: {"verdict": "clean"})
+    assert result["outcome"] == "blocked" and result["reason"] == "head_changed"
     assert api.actions == []
 
 

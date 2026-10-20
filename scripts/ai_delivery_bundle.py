@@ -200,7 +200,13 @@ def service(home, *, activate=False, runner=subprocess.run):
             # exact label before reporting failure so a bad readback cannot
             # leave --apply running.
             if result.returncode == 0:
-                runner(["launchctl", "bootout", target], capture_output=True, text=True, check=False)
+                rollback = runner(["launchctl", "bootout", target], capture_output=True, text=True, check=False)
+                try:
+                    gone = rollback.returncode == 0 and not probe()
+                except ValueError:
+                    gone = False
+                if not gone:
+                    raise ValueError("service_rollback_not_verified")
             raise ValueError("service_activation_not_verified")
     else:
         if probe():
