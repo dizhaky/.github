@@ -804,6 +804,44 @@ def test_hold_disarms_queued_auto_merge_request(delivery_flow,monkeypatch):
     assert api.actions==[("disable","dizhaky/example",1,None,None)]
 
 
+def _moved_head_flow(api,monkeypatch,fresh_reason):
+    api.pr["auto_merge"]={"enabled_at":"now"};count=[0]
+    def check(*args):
+        count[0]+=1;p=copy.deepcopy(api.pr)
+        if count[0]==1:return p,"explicit_hold",[],[]
+        p["head"]["sha"]="b"*40;api.pr["head"]["sha"]="b"*40
+        return p,fresh_reason,[],[]
+    monkeypatch.setattr(delivery,"precheck",check)
+
+
+def test_moved_head_with_hold_cleared_on_fresh_keeps_auto_merge(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    original=api.rest
+    def rest(path,**kwargs):
+        data=original(path,**kwargs)
+        if path.endswith("/pulls/1"):data["head"]["sha"]="b"*40
+        return data
+    monkeypatch.setattr(api,"rest",rest)
+    _moved_head_flow(api,monkeypatch,None)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["reason"]=="head_changed"
+    assert not any(a[0]=="disable" for a in api.actions)
+
+
+def test_moved_head_with_hold_persisting_disarms_and_raises(delivery_flow,monkeypatch):
+    api,ledger=delivery_flow
+    original=api.rest
+    def rest(path,**kwargs):
+        data=original(path,**kwargs)
+        if path.endswith("/pulls/1"):data["head"]["sha"]="b"*40
+        return data
+    monkeypatch.setattr(api,"rest",rest)
+    _moved_head_flow(api,monkeypatch,"explicit_hold")
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["reason"]=="head_changed"
+    assert [a[0] for a in api.actions]==["disable"]
+
+
 def test_hold_in_dry_run_never_disarms(delivery_flow,monkeypatch):
     api,ledger=delivery_flow;api.pr["auto_merge"]={"enabled_at":"now"}
     monkeypatch.setattr(delivery,"precheck",lambda *args:(copy.deepcopy(api.pr),"explicit_hold",[],[]))
