@@ -457,6 +457,20 @@ def context_from_clone(api, root, repo, pr, reason, threads, reviews):
     return context
 
 
+def is_hard_hold(reason, pr):
+    return reason in {"draft_or_closed", "external_head_repository", "explicit_hold", "no_required_checks"} or reason=="required_review_missing" and not (pr.get("deliveryFailedChecks") or pr.get("deliveryFailedStatuses"))
+
+
+def fresh_hard_hold(api, repo, number):
+    # Re-evaluate PR-level holds (draft, hold label, review/checks reason) on the
+    # current head; if it cannot be evaluated, keep the conservative disarm.
+    try:
+        fresh_pr, fresh_reason, _, _ = precheck(api, repo, number)
+    except BoundaryError:
+        return True
+    return is_hard_hold(fresh_reason, fresh_pr)
+
+
 def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, expected_head=None):
     number = listed["number"]
     receipt = {"repo": repo, "number": number, "apply": apply}
@@ -472,7 +486,7 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
         head = pr["head"]["sha"]
         receipt["head"] = head
         receipt["nativeBefore"]=pr.get("deliveryNativeEvidence")
-        hard_hold=reason in {"draft_or_closed", "external_head_repository", "explicit_hold", "no_required_checks"} or reason=="required_review_missing" and not (pr.get("deliveryFailedChecks") or pr.get("deliveryFailedStatuses"))
+        hard_hold=is_hard_hold(reason, pr)
         hold = reason if hard_hold else lease_hold(policy, repo, pr)
         if hold:
             # A queued native auto-merge request would merge on green checks and
@@ -484,8 +498,8 @@ def deliver(api, ledger, policy, repo, listed, *, apply=False, backend=propose, 
                 if (fresh.get("head") or {}).get("sha") != head:
                     # A new head inherits the queued request. Disarm it on that
                     # fresh head only while the hold still applies to it;
-                    # hard holds are PR-level, lease holds are re-run on fresh.
-                    if fresh.get("auto_merge") and (hard_hold or lease_hold(policy, repo, fresh)):
+                    # both hard and lease holds are re-evaluated on fresh.
+                    if fresh.get("auto_merge") and (fresh_hard_hold(api, repo, number) or lease_hold(policy, repo, fresh)):
                         api.merge(repo, number, disable=True)
                     raise BoundaryError("target_head_changed" if expected_head is not None else "head_changed")
                 if fresh.get("auto_merge"):
