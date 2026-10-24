@@ -463,10 +463,11 @@ def is_hard_hold(reason, pr):
 
 def fresh_hard_hold(api, repo, number):
     # Re-evaluate PR-level holds (draft, hold label, review/checks reason) on the
-    # current head; if it cannot be evaluated, keep the conservative disarm.
+    # current head. Any failure to evaluate keeps the conservative disarm;
+    # otherwise deliver()'s outer handler reports blocked and leaves the queue armed.
     try:
         fresh_pr, fresh_reason, _, _ = precheck(api, repo, number)
-    except BoundaryError:
+    except (BoundaryError, merge.APIError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired, OSError):
         return True
     return is_hard_hold(fresh_reason, fresh_pr)
 
