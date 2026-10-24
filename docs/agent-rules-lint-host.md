@@ -11,7 +11,7 @@ This repo (hard-skip hub, stays on GitHub) now hosts a vendored copy of:
 Callers should pin:
 
 ```yaml
-- uses: dizhaky/.github/.github/actions/agent-rules-lint@<40-char SHA>
+- uses: dizhaky/.github/.github/actions/agent-rules-lint@40a05d9f2362b7e4621e83d789a7f563c262a8c6
 ```
 
 Bump the pin when Origin SoT updates the lint or CLOUD-ESSENTIALS; re-vendor from
