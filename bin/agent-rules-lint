@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""agent-rules-lint — check a repo's agent instruction files against the
+standard in rules/AGENT-INSTRUCTIONS-STANDARD.md (DAN-4392).
+
+Usage:
+  agent-rules-lint [REPO ...]            lint each repo (default: git root of cwd)
+  agent-rules-lint --fleet [--root DIR]  lint every git repo directly under DIR
+                                         (default ~/Dev), minus the skip file
+  agent-rules-lint --fix [REPO ...]      (re)write the generated fleet-essentials
+                                         block from rules/CLOUD-ESSENTIALS.md
+Options: --json, --warn (report but exit 0; guu uses it), --skip FILE,
+         --coding-rules PATH.
+
+Checks (each PASS/FAIL per repo):
+  agents  root AGENTS.md exists.
+  claude  root CLAUDE.md is a pure shim: optional YAML front matter, the line
+          `@AGENTS.md`, optional HTML comments, nothing else (or a symlink
+          to AGENTS.md).
+  nested  every nested CLAUDE.md is a pure shim beside an AGENTS.md, and every
+          nested AGENTS.md has that shim beside it (Claude Code never reads a
+          bare AGENTS.md). Paths in the repo's `.agent-rules-ignore` and
+          vendored/cache dirs are skipped.
+  size    root AGENTS.md, generated blocks excluded, is <= 200 lines and
+          <= 16 KiB.
+  dated   no dated "Last session" block in AGENTS.md / CLAUDE.md.
+  fence   root AGENTS.md carries the generated fleet-essentials block,
+          byte-equal to rules/CLOUD-ESSENTIALS.md, and no hand-written
+          "Fleet essentials" section.
+  dup     outside generated blocks, no paragraph that copies a global rule:
+          a verbatim (>= 120 chars) CODING-RULES anchor, or a unit whose
+          5-word shingles are >= 60% contained in one unit of a global
+          rule source (rules/*.md canon, .claude/CLAUDE.md, codex/AGENTS.md).
+
+Exit 1 if any repo FAILs (0 with --warn). The anchor extraction and
+dated-content rules are also what tests/test_instruction_*.py import, so the
+fleet tool and dotfiles CI share one definition.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+DOTFILES = Path(__file__).resolve().parents[1]
+RULES = DOTFILES / "rules"
+DEFAULT_CODING_RULES = RULES / "CODING-RULES.md"
+ESSENTIALS_SOURCE = RULES / "CLOUD-ESSENTIALS.md"
+# Hand-written global rule sources. Generated per-harness renders derive from
+# these, so they are not compared separately.
+GLOBAL_SOURCES = (
+    "rules/CODING-RULES.md",
+    "rules/LINEAR-WORKFLOW.md",
+    "rules/KARPATHY-RULES.md",
+    "rules/SERVICE-HARDENING.md",
+    "rules/OBSIDIAN-VAULT-FIRST.md",
+    "rules/LINEAR-AGENT-LEASE-GUARDIAN.md",
+    "rules/LINEAR-BLOCKED-WAIT-GUARDIAN.md",
+    "rules/CLOUD-ESSENTIALS.md",
+    ".claude/CLAUDE.md",
+    "codex/AGENTS.md",
+)
+ANCHOR_MIN_CHARS = 120
+SIZE_MAX_LINES = 200
+SIZE_MAX_BYTES = 16 * 1024
+DUP_MIN_CHARS = 80
+DUP_CONTAINMENT = 0.6
+SHINGLE = 5
+IGNORE_FILE = ".agent-rules-ignore"
+# Never descend: VCS, caches, vendored deps, graft output, worktree farms.
+PRUNE_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", "graft", "dist", "build",
+    "vendor", ".worktrees", ".trash", ".smart-env", ".obsidian", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".tox", "site-packages",
+}
+FENCE_START = "<!-- fleet-essentials:start (generated from dotfiles rules/CLOUD-ESSENTIALS.md by agent-rules-lint --fix; edit the source, not this block) -->"
+FENCE_END = "<!-- fleet-essentials:end -->"
+FENCE_RE = re.compile(r"<!-- fleet-essentials:start[^>]*-->\n?(.*?)<!-- fleet-essentials:end -->", re.S)
+GRAFT_RE = re.compile(r"<!-- graft:start -->.*?<!-- graft:end -->", re.S)
+FRONT_MATTER_RE = re.compile(r"\A\s*---\n.*?\n---[ \t]*(\n|\Z)", re.S)
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+FLEET_HEADING_RE = re.compile(r"^#{1,6}\s*fleet essentials\b", re.I | re.M)
+
+# ---------------------------------------------------------------- anchors
+
+
+def norm(text: str) -> str:
+    """Lowercase, drop markdown links/markup and punctuation noise."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[`*_#>|~\-]+", " ", text).lower()
+    text = re.sub(r"[^a-z0-9 ./:$%'\"]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _block(text: str, name: str) -> str:
+    m = re.search(rf"<!-- {name}:start -->(.*?)<!-- {name}:end -->", text, re.S)
+    if not m:
+        raise ValueError(f"CODING-RULES has no {name} block")
+    return m.group(1)
+
+
+def extract_anchors(coding_rules: str) -> list[str]:
+    """Canon anchor texts: operating-defaults bullets, the rule 13 autonomy
+    contract and the protected-action list, normalized."""
+    raw = [ln[2:] for ln in _block(coding_rules, "operating-rules").splitlines() if ln.startswith("- ")]
+    raw += [ln[4:] for ln in coding_rules.splitlines() if ln.startswith("13. ")]
+    raw += [
+        ln[2:]
+        for ln in _block(coding_rules, "autonomous-completion").splitlines()
+        if ln.startswith("- Protected actions")
+    ]
+    anchors = [norm(r) for r in raw]
+    return [a for a in anchors if len(a) >= ANCHOR_MIN_CHARS]
+
+
+def anchor_hits(text: str, anchors: list[str], min_chars: int = ANCHOR_MIN_CHARS) -> list[str]:
+    """Each >= min_chars word-aligned window of an anchor found verbatim in text."""
+    target = norm(text)
+    hits = []
+    for anchor in anchors:
+        words = anchor.split()
+        for i in range(len(words)):
+            j, window = i, ""
+            while j < len(words) and len(window) < min_chars:
+                window = (window + " " + words[j]).strip()
+                j += 1
+            if len(window) < min_chars:
+                break
+            if window in target:
+                hits.append(window)
+                break  # one hit per anchor is enough to report
+    return hits
+
+
+# ---------------------------------------------------------- dated content
+
+DATE = r"\b20\d{2}-\d{2}-\d{2}\b"
+# Each rule: name -> line regex. Dated provenance such as "(Dan, 2026-09-08)"
+# or "(DAN-1234)" matches none of them on purpose.
+DATED_RULES: dict[str, re.Pattern[str]] = {
+    # "## Last session" heading, or "Last session (2026-09-28 ..." with a date.
+    # A pointer like "Last session: newest docs/system-log/*.md" is fine.
+    "last-session": re.compile(rf"(?i)^\s*#{{1,6}}\s*last session\b|\blast session\b.{{0,20}}{DATE}"),
+    # A heading carrying a date is a session/changelog block.
+    "dated-heading": re.compile(rf"^\s*#{{1,6}}\s.*{DATE}"),
+    # Commit SHAs: 7-40 hex chars with at least one digit and one letter.
+    "sha": re.compile(r"(?<![\w/.-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/.-])"),
+    # "Open:" / "**Open:**" / "Open items:" todo lists.
+    "open-todo": re.compile(r"(?i)^\s*(?:[-*]\s+)?(?:\*\*)?open(?: items| todos?)?(?:\*\*)?\s*:"),
+    # Session handoff phrasing.
+    "handoff": re.compile(
+        r"(?i)\b(?:next session|this session(?:'s)? (?:work|changes)|where (?:we|i) left off"
+        r"|pick(?:ed|ing)? up (?:from|where)|session handoff|handoff note|next machine step)\b"
+    ),
+}
+PR_REF = re.compile(r"(?:\[#|(?<![\w/&])#|/pull/)(\d{2,6})\b")
+
+
+def strip_graft_fence(text: str) -> str:
+    return GRAFT_RE.sub("", text)
+
+
+def strip_generated(text: str) -> str:
+    """Drop both generated blocks (graft's template and fleet essentials)."""
+    return FENCE_RE.sub("", strip_graft_fence(text))
+
+
+def dated_findings(text: str) -> list[tuple[str, int, str]]:
+    """(rule, line number, line) for every dated/ephemeral line."""
+    found = []
+    infence = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.strip().startswith("```"):
+            infence = not infence
+        if infence:
+            continue
+        for rule, rx in DATED_RULES.items():
+            if rx.search(line):
+                found.append((rule, n, line.strip()))
+        if len(set(PR_REF.findall(line))) >= 2:
+            found.append(("pr-list", n, line.strip()))
+    return found
+
+
+# --------------------------------------------------- shim and essentials
+
+
+def is_pure_shim(text: str) -> bool:
+    """Front matter, `@AGENTS.md`, HTML comments: nothing else."""
+    body = HTML_COMMENT_RE.sub("", FRONT_MATTER_RE.sub("", text, count=1))
+    return [ln.strip() for ln in body.splitlines() if ln.strip()] == ["@AGENTS.md"]
+
+
+def check_claude_file(claude: Path) -> tuple[bool, str]:
+    agents = claude.with_name("AGENTS.md")
+    if claude.is_symlink():
+        target = claude.resolve()
+        ok = target == agents.resolve() and target.is_file()
+        return ok, "symlink -> AGENTS.md" if ok else f"symlink -> {target}"
+    if not claude.is_file():
+        return False, "CLAUDE.md missing"
+    if not is_pure_shim(claude.read_text(encoding="utf-8", errors="replace")):
+        return False, "CLAUDE.md is not a pure `@AGENTS.md` shim"
+    return True, ""
+
+
+def render_essentials(source: str) -> str:
+    """The generated block, exactly as --fix writes it."""
+    return f"{FENCE_START}\n{source.strip()}\n{FENCE_END}"
+
+
+def check_fence(text: str, expected: str | None) -> tuple[bool, str]:
+    blocks = FENCE_RE.findall(text)
+    if FLEET_HEADING_RE.search(FENCE_RE.sub("", text)):
+        return False, "hand-written Fleet essentials section (run --fix)"
+    if len(blocks) != 1:
+        return False, "fleet-essentials block missing (run --fix)" if not blocks else "more than one block"
+    if expected is not None and blocks[0].strip() != expected.strip():
+        return False, "fleet-essentials block is stale or hand-edited (run --fix)"
+    return True, ""
+
+
+def fix_text(text: str, source: str) -> str:
+    """Rewrite the generated block; replace a hand-written Fleet essentials
+    section with it, or insert it before the first `## ` heading."""
+    block = render_essentials(source)
+    if FENCE_RE.search(text):
+        return FENCE_RE.sub(lambda _m: block, text, count=1)
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if FLEET_HEADING_RE.match(ln)), None)
+    if start is not None:
+        level = len(lines[start]) - len(lines[start].lstrip("#"))
+        end = start + 1
+        while end < len(lines) and not re.match(rf"^#{{1,{level}}}\s", lines[end]):
+            end += 1
+        lines[start:end] = block.splitlines() + [""]
+    else:
+        at = next((i for i, ln in enumerate(lines) if ln.startswith("## ")), len(lines))
+        lines[at:at] = block.splitlines() + [""]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+# --------------------------------------------------------- duplication
+
+LIST_ITEM = re.compile(r"^\s*([-*+]|\d+[.)])\s+")
+
+
+def units(text: str) -> list[tuple[int, str]]:
+    """Paragraph, list-item and table units as (start line, raw text)."""
+    out: list[tuple[int, str]] = []
+    cur: list[str] = []
+    start, infence = 0, False
+    for i, line in enumerate(text.split("\n"), 1):
+        if line.strip().startswith("```"):
+            infence = not infence
+        if not infence and not line.strip():
+            if cur:
+                out.append((start, "\n".join(cur)))
+                cur = []
+            continue
+        if cur and not infence and LIST_ITEM.match(line) and not line.strip().startswith("|"):
+            out.append((start, "\n".join(cur)))
+            cur = []
+        if not cur:
+            start = i
+        cur.append(line)
+    if cur:
+        out.append((start, "\n".join(cur)))
+    return out
+
+
+def shingles(text: str) -> set[str]:
+    words = text.split()
+    grams = [" ".join(words[i : i + SHINGLE]) for i in range(max(1, len(words) - SHINGLE + 1))]
+    return {hashlib.md5(g.encode()).hexdigest()[:12] for g in grams}
+
+
+def load_global_units(skip: Path | None = None) -> list[tuple[str, set[str]]]:
+    """(source rel path, shingle set) for every sizable unit of a global source."""
+    found = []
+    for rel in GLOBAL_SOURCES:
+        path = DOTFILES / rel
+        if not path.is_file() or (skip is not None and path.resolve() == skip.resolve()):
+            continue
+        for _, raw in units(strip_generated(path.read_text(encoding="utf-8", errors="replace"))):
+            t = norm(raw)
+            if len(t) >= DUP_MIN_CHARS:
+                found.append((rel, shingles(t)))
+    return found
+
+
+def dup_findings(text: str, global_units: list[tuple[str, set[str]]]) -> list[str]:
+    """`line N ~ source` for each unit mostly contained in one global unit."""
+    hits = []
+    for line, raw in units(text):
+        t = norm(raw)
+        if len(t) < DUP_MIN_CHARS:
+            continue
+        sh = shingles(t)
+        for rel, gsh in global_units:
+            if len(sh & gsh) / len(sh) >= DUP_CONTAINMENT:
+                hits.append(f"line {line} ~ {rel}: {t[:60]}...")
+                break
+    return hits
+
+
+# ------------------------------------------------------------- repo checks
+
+
+def read_ignores(repo: Path) -> list[str]:
+    path = repo / IGNORE_FILE
+    if not path.is_file():
+        return []
+    names = (ln.split("#", 1)[0].strip() for ln in path.read_text(encoding="utf-8").splitlines())
+    return [n.rstrip("/") for n in names if n]
+
+
+def is_ignored(rel: str, patterns: list[str]) -> bool:
+    """True when rel, or any ancestor directory of it, matches a pattern."""
+    parts = rel.split("/")
+    prefixes = ["/".join(parts[: i + 1]) for i in range(len(parts))]
+    return any(fnmatch.fnmatch(pre, p) for pre in prefixes for p in patterns)
+
+
+def nested_files(repo: Path, ignores: list[str]) -> list[tuple[str, bool]]:
+    """(rel path, ignored?) of CLAUDE.md / AGENTS.md below the root, skipping
+    nested git repos and vendored/cache dirs. Ignored paths are still walked:
+    `.agent-rules-ignore` waives the pairing rules, never the shim rule."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(repo):
+        here = Path(dirpath)
+        rel_dir = here.relative_to(repo).as_posix()
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in PRUNE_DIRS and not d.endswith("-worktrees") and not (here / d / ".git").exists()
+        ]
+        if rel_dir == ".":
+            continue
+        for name in ("CLAUDE.md", "AGENTS.md"):
+            rel = f"{rel_dir}/{name}"
+            if name in filenames:
+                found.append((rel, is_ignored(rel, ignores)))
+    return sorted(found)
+
+
+def check_nested(repo: Path, ignores: list[str]) -> list[str]:
+    problems = []
+    for rel, ignored in nested_files(repo, ignores):
+        path = repo / rel
+        paired = path.with_name("AGENTS.md").is_file() and path.with_name("CLAUDE.md").exists()
+        if path.name == "CLAUDE.md" and paired:
+            ok, detail = check_claude_file(path)
+            if not ok:
+                problems.append(f"{rel}: {detail}")
+        elif not ignored and not paired:
+            missing = "CLAUDE.md shim" if path.name == "AGENTS.md" else "AGENTS.md beside it"
+            problems.append(f"{rel} has no {missing}")
+    return problems
+
+
+def check_size(text: str) -> tuple[bool, str]:
+    body = strip_generated(text)
+    lines, size = len(body.splitlines()), len(body.encode())
+    ok = lines <= SIZE_MAX_LINES and size <= SIZE_MAX_BYTES
+    return ok, "" if ok else f"{lines} lines / {size} B (cap {SIZE_MAX_LINES} / {SIZE_MAX_BYTES})"
+
+
+def instruction_texts(repo: Path) -> dict[str, str]:
+    texts = {}
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = repo / name
+        if path.is_file() and not (name == "CLAUDE.md" and path.is_symlink()):
+            texts[name] = strip_generated(path.read_text(encoding="utf-8", errors="replace"))
+    return texts
+
+
+def check_repo(repo: Path, ctx: dict) -> dict:
+    agents_path = repo / "AGENTS.md"
+    agents = agents_path.read_text(encoding="utf-8", errors="replace") if agents_path.is_file() else ""
+    texts = instruction_texts(repo)
+    dated = [f"{n}:{ln}" for n, t in texts.items() for rule, ln, _ in dated_findings(t) if rule == "last-session"]
+    skip = agents_path.resolve() if agents_path.is_file() else None
+    global_units = [u for u in ctx["global_units"] if (DOTFILES / u[0]).resolve() != skip]
+    dup = [f"{n}: {h[:50]}..." for n, t in texts.items() for h in anchor_hits(t, ctx["anchors"])]
+    dup += [f"{n} {h}" for n, t in texts.items() for h in dup_findings(t, global_units)]
+    nested = check_nested(repo, read_ignores(repo))
+    checks = {
+        "agents": (agents_path.is_file(), "" if agents_path.is_file() else "AGENTS.md missing"),
+        "claude": check_claude_file(repo / "CLAUDE.md"),
+        "nested": (not nested, "; ".join(nested)),
+        "size": check_size(agents) if agents else (True, ""),
+        "dated": (not dated, ", ".join(dated)),
+        "fence": check_fence(agents, ctx["essentials"]),
+        "dup": (not dup, "; ".join(dup)),
+    }
+    return {
+        "repo": repo.name,
+        "path": str(repo),
+        "pass": all(ok for ok, _ in checks.values()),
+        "checks": {k: {"pass": ok, "detail": d} for k, (ok, d) in checks.items()},
+    }
+
+
+# ------------------------------------------------------------ discovery
+
+
+def is_linked_worktree(path: Path) -> bool:
+    """A linked worktree's .git is a file pointing into <repo>/.git/worktrees/."""
+    git = path / ".git"
+    return git.is_file() and "/worktrees/" in git.read_text(encoding="utf-8", errors="replace")
+
+
+def discover(root: Path, skip: set[str]) -> list[Path]:
+    repos = []
+    for child in sorted(root.iterdir()):
+        name = child.name
+        # Dot-dirs are skipped unless they are real repos: `.github` is one.
+        if name in skip or name == ".worktrees" or name.endswith("-worktrees"):
+            continue
+        if name.startswith(".") and not (child / ".git").exists():
+            continue
+        if child.is_dir() and (child / ".git").exists() and not is_linked_worktree(child):
+            repos.append(child)
+    return repos
+
+
+DEFAULT_SKIP = Path(__file__).with_name("agent-rules-lint.skip")
+
+
+def read_skip(path: Path | None) -> set[str]:
+    if path is None:
+        path = DEFAULT_SKIP if DEFAULT_SKIP.is_file() else None
+    if path is None:
+        return set()
+    names = (ln.split("#", 1)[0].strip() for ln in path.read_text(encoding="utf-8").splitlines())
+    return {n for n in names if n}
+
+
+def git_root(start: Path) -> Path:
+    proc = subprocess.run(
+        ["git", "-C", str(start), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False
+    )
+    return Path(proc.stdout.strip()) if proc.returncode == 0 else start
+
+
+COLS = ["agents", "claude", "nested", "size", "dated", "fence", "dup"]
+
+
+def render_table(results: list[dict]) -> str:
+    width = max([len(r["repo"]) for r in results] + [4])
+    rows = [
+        f"| {'repo':<{width}} | " + " | ".join(COLS) + " | result | detail |",
+        f"|{'-' * (width + 2)}|" + "|".join("-" * (len(c) + 2) for c in COLS) + "|--------|--------|",
+    ]
+    for r in results:
+        cells = [("PASS" if r["checks"][c]["pass"] else "FAIL").ljust(len(c)) for c in COLS]
+        detail = "; ".join(f"{c}: {r['checks'][c]['detail']}" for c in COLS if not r["checks"][c]["pass"])
+        verdict = "PASS" if r["pass"] else "FAIL"
+        rows.append(f"| {r['repo']:<{width}} | " + " | ".join(cells) + f" | {verdict:<6} | {detail} |")
+    passed = sum(r["pass"] for r in results)
+    rows.append(f"\n{passed} PASS, {len(results) - passed} FAIL of {len(results)} repos")
+    return "\n".join(rows)
+
+
+def run_fix(repos: list[Path], source: str) -> None:
+    for repo in repos:
+        path = repo / "AGENTS.md"
+        if not path.is_file():
+            print(f"[skip] {repo.name}: no AGENTS.md", file=sys.stderr)
+            continue
+        old = path.read_text(encoding="utf-8")
+        new = fix_text(old, source)
+        if new != old:
+            path.write_text(new, encoding="utf-8")
+            print(f"[fixed] {path}")
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("repos", nargs="*", type=Path, help="repo dirs (default: git root of cwd)")
+    ap.add_argument("--fleet", action="store_true", help="lint every repo under --root")
+    ap.add_argument("--root", type=Path, default=Path.home() / "Dev")
+    ap.add_argument("--skip", type=Path, help="fleet skip list (default: bin/agent-rules-lint.skip)")
+    ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    ap.add_argument("--warn", action="store_true", help="report only; always exit 0")
+    ap.add_argument("--fix", action="store_true", help="write the fleet-essentials block, then lint")
+    ap.add_argument("--coding-rules", type=Path, default=DEFAULT_CODING_RULES)
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.fleet:
+        if not args.root.is_dir():
+            print(f"[skip] agent-rules-lint: no {args.root}", file=sys.stderr)
+            return 0
+        repos = discover(args.root, read_skip(args.skip))
+    else:
+        repos = [p.resolve() for p in args.repos] or [git_root(Path.cwd())]
+    source = ESSENTIALS_SOURCE.read_text(encoding="utf-8") if ESSENTIALS_SOURCE.is_file() else None
+    if args.fix:
+        if source is None:
+            print(f"[error] {ESSENTIALS_SOURCE} missing", file=sys.stderr)
+            return 2
+        run_fix(repos, source)
+    ctx = {
+        "anchors": extract_anchors(args.coding_rules.read_text(encoding="utf-8")),
+        "essentials": source,
+        "global_units": load_global_units(),
+    }
+    results = [check_repo(repo, ctx) for repo in repos]
+    print(json.dumps(results, indent=2) if args.json else render_table(results))
+    return 0 if args.warn or all(r["pass"] for r in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
