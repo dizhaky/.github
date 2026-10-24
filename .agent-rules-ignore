@@ -1,0 +1,5 @@
+# Vendored global instruction sources for the agent-rules-lint composite host
+# (DAN-4942). Not per-dir agent instruction trees in this hub.
+.claude/
+codex/
+rules/

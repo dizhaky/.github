@@ -1,0 +1,11 @@
+# Repos `agent-rules-lint --fleet` skips, one per line (rules/AGENT-INSTRUCTIONS-STANDARD.md § Exemptions).
+# Forks and third-party checkouts: their AGENTS.md/CLAUDE.md is upstream content,
+# not Dan's agent instructions. agentmemory carries only a `@AGENTS.md` shim of ours.
+Agent-Reach
+agentmemory
+everything-claude-code
+Graft
+graft-upstream
+# Archived: read-only on GitHub, so a fix cannot ship.
+cloud-automation-hub
+medifacture-capital

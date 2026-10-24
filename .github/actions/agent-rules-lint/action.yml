@@ -1,0 +1,18 @@
+name: agent-rules-lint
+description: >-
+  Check the caller repo's AGENTS.md / CLAUDE.md against dotfiles
+  rules/AGENT-INSTRUCTIONS-STANDARD.md (DAN-4392). The runner downloads this
+  whole repo for the action, so the lint reads the live rules/ sources and
+  rules/CLOUD-ESSENTIALS.md from the same ref.
+inputs:
+  path:
+    description: Repo directory to lint.
+    default: ${{ github.workspace }}
+runs:
+  using: composite
+  steps:
+    - name: agent-rules-lint
+      shell: bash
+      env:
+        LINT_PATH: ${{ inputs.path }}
+      run: python3 "$GITHUB_ACTION_PATH/../../../bin/agent-rules-lint" "$LINT_PATH"
