@@ -466,7 +466,7 @@ def fresh_hard_hold(api, repo, number):
     # current head; if it cannot be evaluated, keep the conservative disarm.
     try:
         fresh_pr, fresh_reason, _, _ = precheck(api, repo, number)
-    except BoundaryError:
+    except (BoundaryError, merge.APIError, KeyError, TypeError, ValueError):
         return True
     return is_hard_hold(fresh_reason, fresh_pr)
 

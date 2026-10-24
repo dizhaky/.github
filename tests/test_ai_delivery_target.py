@@ -122,3 +122,21 @@ def test_cli_rejects_partial_unbounded_or_daemon_target(tmp_path, monkeypatch, e
     monkeypatch.setattr(sys, "argv", ["ai_delivery.py", "--state-dir", str(tmp_path / "unused"), *extra])
     with pytest.raises(SystemExit) as error: delivery.main()
     assert error.value.code == 2 and not (tmp_path / "unused").exists()
+
+
+@pytest.mark.parametrize("exc", [delivery.merge.APIError("boom"), KeyError("x"), TypeError("x"), ValueError("x")])
+def test_fresh_precheck_failure_still_disarms(delivery_flow, monkeypatch, exc):
+    api, ledger = delivery_flow
+    api.pr["auto_merge"] = {"enabled_at": "now"}
+    held = copy.deepcopy(api.pr)
+    calls = []
+    def precheck(*args):
+        calls.append(1)
+        if len(calls) > 1:
+            raise exc
+        return held, "explicit_hold", [], []
+    monkeypatch.setattr(delivery, "precheck", precheck)
+    api.pr["head"]["sha"] = "b" * 40
+    result = delivery.deliver(api, ledger, policy(), "dizhaky/example", {"number": 1}, apply=True, backend=lambda ctx: {"verdict": "clean"})
+    assert result["outcome"] == "blocked" and result["reason"] == "head_changed"
+    assert api.actions == [("disable", "dizhaky/example", 1, None, None)]
