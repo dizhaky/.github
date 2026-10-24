@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -839,6 +840,34 @@ def test_moved_head_with_hold_persisting_disarms_and_raises(delivery_flow,monkey
     _moved_head_flow(api,monkeypatch,"explicit_hold")
     result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
     assert result["reason"]=="head_changed"
+    assert [a[0] for a in api.actions]==["disable"]
+
+
+@pytest.mark.parametrize("error",[
+    merge.APIError("gh api failed"),
+    KeyError("check_runs"),
+    TypeError("bad page"),
+    ValueError("bad json"),
+    subprocess.TimeoutExpired("gh",180),
+    OSError("gh unavailable"),
+    proposal.BoundaryError("head_changed"),
+])
+def test_moved_head_unevaluable_precheck_still_disarms(delivery_flow,monkeypatch,error):
+    api,ledger=delivery_flow
+    api.pr["auto_merge"]={"enabled_at":"now"};count=[0]
+    def check(*args):
+        count[0]+=1
+        if count[0]==1:return copy.deepcopy(api.pr),"explicit_hold",[],[]
+        raise error
+    monkeypatch.setattr(delivery,"precheck",check)
+    original=api.rest
+    def rest(path,**kwargs):
+        data=original(path,**kwargs)
+        if path.endswith("/pulls/1"):data["head"]["sha"]="b"*40
+        return data
+    monkeypatch.setattr(api,"rest",rest)
+    result=delivery.deliver(api,ledger,policy(),"dizhaky/example",{"number":1},apply=True,backend=lambda ctx:clean())
+    assert result["outcome"]=="blocked" and result["reason"]=="head_changed"
     assert [a[0] for a in api.actions]==["disable"]
 
 
