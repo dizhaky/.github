@@ -31,7 +31,7 @@ Two fenced blocks in a repo `AGENTS.md` are generated, never hand-edited, and ex
 `bin/agent-rules-lint` checks one repo (default: the current git root), several paths, or the fleet (`--fleet`, every repo under `~/Dev` minus `bin/agent-rules-lint.skip`). Checks: `agents`, `claude` (pure shim), `nested` (folder pairs), `size`, `dated`, `fence` (present and byte-equal to the source) and `dup` (a CODING-RULES anchor pasted verbatim, or a paragraph whose 5-word shingles are mostly contained in one paragraph of a global source).
 
 - **guu:** runs `--fleet --warn` at the end of every run (report only).
-- **CI:** private repos run the composite action `dizhaky/dotfiles/.github/actions/agent-rules-lint` (the runner downloads dotfiles at the pinned commit, so lint and `rules/` sources match; dotfiles Actions access is `user`). Not a required context. Public repos run the lint locally only. Callers must (a) pin the action and `actions/checkout` to a full 40-char commit SHA, never a branch or tag, and (b) never run fork PR code on the self-hosted runners: `pull_request` only (never `pull_request_target`), a same-repo `if:` gate, `permissions: contents: read`, `persist-credentials: false`. Caller job (bump the dotfiles SHA deliberately when the standard changes):
+- **CI:** private repos run the composite action `dizhaky/.github/.github/actions/agent-rules-lint` (hosted in this hub so GHA does not need the private GH leftover; the runner downloads the hub at the pinned commit, so lint and `rules/` sources match). Not a required context. Public repos run the lint locally only. Callers must (a) pin the action and `actions/checkout` to a full 40-char commit SHA, never a branch or tag, and (b) never run fork PR code on the self-hosted runners: `pull_request` only (never `pull_request_target`), a same-repo `if:` gate, `permissions: contents: read`, `persist-credentials: false`. Caller job (bump the hub SHA deliberately when the standard or lint changes; see `docs/agent-rules-lint-host.md`):
 
 ```yaml
 permissions:
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@<40-char SHA> # v7
         with:
           persist-credentials: false
-      - uses: dizhaky/dotfiles/.github/actions/agent-rules-lint@<40-char dotfiles SHA>
+      - uses: dizhaky/.github/.github/actions/agent-rules-lint@40a05d9f2362b7e4621e83d789a7f563c262a8c6
 ```
 - **Per-repo exceptions:** a `.agent-rules-ignore` file at the repo root lists nested paths (glob or dir prefix) the `nested` check skips, each with a `#` reason. Use it for global sources and archives, never to hide a fat shim.
 
