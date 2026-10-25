@@ -30,6 +30,7 @@ GitHub Actions, Python rollout scripts
 | Run | `gh workflow run nightly-health-check.yml -R dizhaky/.github` |
 | Test | `TZ=UTC LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONHASHSEED=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tests` |
 | Lint | `actionlint .github/workflows/<file>.yml` |
+| Instruction lint | `bin/agent-rules-lint <repo>`; fleet CI calls the composite `dizhaky/.github/.github/actions/agent-rules-lint@<SHA>` (see `docs/agent-rules-lint-host.md`; callers pinned by `tests/test_agent_rules_lint_caller_pin.py`) |
 
 Template tests need pytest for import-time isolation and disposable child-process probes. CI runs pytest on pushes and PRs.
 
