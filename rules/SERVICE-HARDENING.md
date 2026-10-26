@@ -14,15 +14,19 @@ Never rely on external rotation.
 Every unit that binds a port includes:
 
 ```ini
+[Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
 [Service]
-ExecStartPre=/usr/bin/bash -lc '/usr/bin/fuser -k <PORT>/tcp >/dev/null 2>&1 || true'
-ExecStartPre=/usr/bin/bash -lc 'for i in $(seq 1 15); do /usr/bin/fuser <PORT>/tcp >/dev/null 2>&1 || exit 0; sleep 1; done; /usr/bin/fuser -k -KILL <PORT>/tcp >/dev/null 2>&1; sleep 2'
+ExecStartPre=/usr/bin/bash -lc '/usr/bin/fuser -k -TERM <PORT>/tcp >/dev/null 2>&1 || true'
+ExecStartPre=/usr/bin/bash -lc 'for i in $(seq 1 15); do /usr/bin/fuser <PORT>/tcp >/dev/null 2>&1 || exit 0; sleep 1; done; /usr/bin/fuser -k -KILL <PORT>/tcp >/dev/null 2>&1; sleep 2; ! /usr/bin/fuser <PORT>/tcp >/dev/null 2>&1'
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=30
-StartLimitIntervalSec=300
-StartLimitBurst=10
 ```
+
+`StartLimit*` belong in `[Unit]` (ignored under `[Service]`). The first probe sends SIGTERM so the 15s grace loop is meaningful; the final probe fails the start loudly if the port is still held after SIGKILL.
 
 Orphans (manual runs, tmux detach, SSH drop) survive `systemctl stop` and hold the port; without preemption the unit crash-loops.
 
